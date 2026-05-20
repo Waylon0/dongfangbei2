@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.claude/
+.vscode/
+
+# 开发参考资料（交付时删除）
+references/
+
+# 测试数据（交付时删除）
+data/*.dat
+data/*.npy
+data/*.npz
+
+# 训练产出（交付前确认保留）
+models/*.pt
+!models/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
