@@ -13,17 +13,17 @@ import os
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtWidgets import (
+from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QTabWidget, QScrollArea,
     QSpinBox, QDoubleSpinBox, QCheckBox, QFormLayout, QGroupBox,
     QSplitter, QStatusBar, QMessageBox, QProgressBar,
+    QInputDialog, QAction,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 import matplotlib
-matplotlib.use('QtAgg')
+matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
@@ -33,7 +33,6 @@ from config import Config
 from src.pipeline import run_pipeline
 from src.preprocess import load_attribute_data
 from src.synthetic import generate_synthetic_data
-from src.visualize import plot_overlay
 
 
 # --- matplotlib 画布 ---
@@ -326,7 +325,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "加载失败", str(e))
 
     def _on_generate(self):
-        from PyQt6.QtWidgets import QInputDialog
         rows, ok = QInputDialog.getInt(self, "合成数据", "行数:", 300, 50, 2000, 50)
         if not ok:
             return

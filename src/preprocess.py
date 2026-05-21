@@ -20,27 +20,39 @@ def _load_dat(filepath: str) -> np.ndarray:
     格式：空格分隔，首行为 # 注释头，后续每行：
     Line  CMP  X  Y  Value
     根据 Line 和 CMP 的唯一个数构建规则网格。
+    两遍扫描：第一遍收集维度，第二遍填充数据，避免大文件全部读入内存。
     """
+    lines_set = set()
+    cmps_set = set()
+
     with open(filepath, 'r') as f:
-        lines = f.readlines()
+        for line in f:
+            if line.startswith('#'):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            lines_set.add(int(parts[0]))
+            cmps_set.add(int(parts[1]))
 
-    rows_data = []
-    for line in lines:
-        if line.startswith('#'):
-            continue
-        parts = line.strip().split()
-        if len(parts) < 5:
-            continue
-        rows_data.append((int(parts[0]), int(parts[1]), float(parts[4])))
-
-    lines_vals = sorted(set(r[0] for r in rows_data))
-    cmps_vals = sorted(set(r[1] for r in rows_data))
+    lines_vals = sorted(lines_set)
+    cmps_vals = sorted(cmps_set)
     line_to_idx = {v: i for i, v in enumerate(lines_vals)}
     cmp_to_idx = {v: i for i, v in enumerate(cmps_vals)}
 
     data = np.zeros((len(lines_vals), len(cmps_vals)), dtype=np.float64)
-    for line, cmp, val in rows_data:
-        data[line_to_idx[line], cmp_to_idx[cmp]] = val
+
+    with open(filepath, 'r') as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            li = int(parts[0])
+            ci = int(parts[1])
+            val = float(parts[4])
+            data[line_to_idx[li], cmp_to_idx[ci]] = val
 
     return data
 
