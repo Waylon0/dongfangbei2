@@ -1,17 +1,69 @@
 """数据加载与预处理
 
-支持两种分割路径：
-1. UNet（推荐）：合成数据预训练，输出概率图，边界更鲁棒
-2. Otsu / 自适应阈值（fallback）：不需要模型文件
+支持多种数据格式：
+- .npy / .npz（NumPy）
+- .dat（GeoEast ASCII 网格）
+- .png / .tiff / .bmp / .jpg（图像文件）
+- .txt（空格/逗号分隔的矩阵文本）
+
+去噪与增强：
+- 中值滤波 / 高斯滤波 / CLAHE / Gabor 方向性滤波
 """
 
 import os
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, median_filter
 from skimage import exposure
 from .utils import normalize
 
-# --- 文件加载（不变） ---
+
+def apply_gabor_filter(data: np.ndarray, frequency: float = 0.15,
+                        n_angles: int = 4) -> np.ndarray:
+    """Gabor 方向性滤波：增强特定方向的线性结构（断层）。
+
+    对多个方向做 Gabor 滤波，取每个像素在所有方向上的最大响应。
+    适合增强有方向性条带的弱断层信号。
+
+    参数：
+        data: 归一化后的属性数据 (2D, 0~1)
+        frequency: Gabor 核频率（控制条纹宽度）
+        n_angles: 方向数量（等分 180°）
+
+    返回：
+        增强后的图像 (2D, 0~1)
+    """
+    from scipy.ndimage import correlate
+    h, w = data.shape
+    result = np.zeros_like(data)
+
+    for k in range(n_angles):
+        theta = k * np.pi / n_angles
+        # 构建 Gabor 核
+        sigma_x = 1.0 / frequency * 0.7
+        sigma_y = sigma_x * 3.0
+        kernel_size = int(4.0 / frequency)
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel_size = max(7, min(kernel_size, min(h, w) // 4))
+
+        ks2 = kernel_size // 2
+        y, x = np.mgrid[-ks2:ks2+1, -ks2:ks2+1]
+        x_theta = x * np.cos(theta) + y * np.sin(theta)
+        y_theta = -x * np.sin(theta) + y * np.cos(theta)
+        gb = np.exp(-0.5 * (x_theta**2 / sigma_x**2 + y_theta**2 / sigma_y**2))
+        gb *= np.cos(2 * np.pi * frequency * x_theta)
+        # 去均值，使其成为零和滤波器
+        gb -= gb.mean()
+        gb /= np.abs(gb).sum() + 1e-10
+
+        filtered = correlate(data.astype(np.float64), gb, mode='reflect')
+        result = np.maximum(result, np.abs(filtered))
+
+    # 归一化回 [0, 1]
+    mn, mx = result.min(), result.max()
+    if mx > mn:
+        result = (result - mn) / (mx - mn)
+    return result
 
 
 def _load_dat(filepath: str) -> np.ndarray:
@@ -20,7 +72,6 @@ def _load_dat(filepath: str) -> np.ndarray:
     格式：空格分隔，首行为 # 注释头，后续每行：
     Line  CMP  X  Y  Value
     根据 Line 和 CMP 的唯一个数构建规则网格。
-    两遍扫描：第一遍收集维度，第二遍填充数据，避免大文件全部读入内存。
     """
     lines_set = set()
     cmps_set = set()
@@ -57,11 +108,62 @@ def _load_dat(filepath: str) -> np.ndarray:
     return data
 
 
+def _load_image(filepath: str) -> np.ndarray:
+    """从图像文件加载为灰度二维数组 (float64)"""
+    try:
+        import cv2
+        img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"无法读取图像文件: {filepath}")
+        return img.astype(np.float64)
+    except ImportError:
+        from skimage import io
+        img = io.imread(filepath, as_gray=True)
+        return img.astype(np.float64)
+
+
+def _load_txt_matrix(filepath: str) -> np.ndarray:
+    """从 .txt 文件加载数值矩阵（空格或逗号分隔）"""
+    try:
+        data = np.loadtxt(filepath)
+        if data.ndim != 2:
+            raise ValueError(f"TXT 文件不是二维矩阵: shape={data.shape}")
+        return data.astype(np.float64)
+    except Exception:
+        pass
+    # 尝试用 csv reader 处理更复杂的格式
+    import csv
+    rows = []
+    with open(filepath, 'r') as f:
+        reader = csv.reader(f, delimiter=None)
+        for row in reader:
+            nums = []
+            for val in row:
+                try:
+                    nums.append(float(val))
+                except ValueError:
+                    continue
+            if nums:
+                rows.append(nums)
+    if len(set(len(r) for r in rows)) != 1:
+        raise ValueError("TXT 文件各行列数不一致")
+    return np.array(rows, dtype=np.float64)
+
+
 def load_attribute_data(filepath: str) -> np.ndarray:
-    """加载沿层属性数据。支持 .npy / .npz / .dat 格式。"""
-    if filepath.endswith('.dat'):
+    """加载沿层属性数据。
+
+    支持格式：.npy / .npz / .dat / .png / .tiff / .tif / .bmp / .jpg / .jpeg / .txt
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+
+    if ext == '.dat':
         return _load_dat(filepath)
-    if filepath.endswith('.npz'):
+    elif ext in ('.png', '.tiff', '.tif', '.bmp', '.jpg', '.jpeg', '.webp'):
+        return _load_image(filepath)
+    elif ext == '.txt':
+        return _load_txt_matrix(filepath)
+    elif ext == '.npz':
         data = np.load(filepath)
         key = list(data.keys())[0]
         return data[key].astype(np.float64)
@@ -69,19 +171,25 @@ def load_attribute_data(filepath: str) -> np.ndarray:
         return np.load(filepath).astype(np.float64)
 
 
-# --- 经典预处理流水线 ---
-
-
-def preprocess(data: np.ndarray, sigma: float = 1.0,
+def preprocess(data: np.ndarray,
+               sigma: float = 1.0,
+               use_median_filter: bool = False,
+               median_filter_size: int = 3,
                use_clahe: bool = False,
                clahe_clip_limit: float = 2.0,
                clahe_grid_size: int = 8,
                otsu_scale: float = 1.0) -> np.ndarray:
-    """经典预处理：归一化 → CLAHE(可选) → 高斯滤波 → Otsu 二值化。
+    """经典预处理：归一化 → 可选中值滤波 → CLAHE(可选) → 高斯滤波 → Otsu 二值化。
 
     返回二值图像 (0/1)。
     """
     data = normalize(data)
+
+    if use_median_filter:
+        size = max(3, median_filter_size)
+        if size % 2 == 0:
+            size += 1
+        data = median_filter(data, size=size)
 
     if use_clahe:
         img_uint8 = (data * 255).astype(np.uint8)
@@ -98,9 +206,6 @@ def preprocess(data: np.ndarray, sigma: float = 1.0,
     binary = (smoothed >= thresh).astype(np.uint8)
 
     return binary
-
-
-# --- UNet 分割路径 ---
 
 
 class UNetFault:

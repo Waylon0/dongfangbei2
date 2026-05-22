@@ -1,0 +1,74 @@
+====================================================
+  断层多边形自动追踪系统 v2.0 — 打包与部署说明
+====================================================
+
+一、运行方式
+------------
+方式1：直接运行
+  pip install -r requirements.txt
+  python app.py
+
+方式2：双击 run.bat
+  自动检查依赖并启动程序
+
+方式3：命令行集成（GeoEast）
+  python run.py --project "工区名" --grid "属性名"
+
+
+二、打包为独立 EXE（PyInstaller）
+---------------------------------
+1. 安装 PyInstaller：
+   pip install pyinstaller
+
+2. 打包命令：
+   pyinstaller --noconsole --onefile --name=FaultPicker ^
+     --add-data="src;src" ^
+     --add-data="config.py;." ^
+     --hidden-import=skimage.filters ^
+     --hidden-import=skimage.measure ^
+     --hidden-import=skimage.morphology ^
+     --hidden-import=skimage.segmentation ^
+     --hidden-import=matplotlib.backends.backend_qtagg ^
+     --hidden-import=shapely.geometry ^
+     --hidden-import=scipy.ndimage ^
+     --hidden-import=cv2 ^
+     app.py
+
+3. 生成的 EXE 位于 dist/FaultPicker.exe
+
+4. 若需在 GeoEast 虚拟机中集成，将 FaultPicker.exe 放入指定目录后，
+   在 GeoEast 主控中注册外部工具菜单调用即可。
+
+
+三、支持的输入格式
+------------------
+- GeoEast .dat 网格文件
+- NumPy .npy / .npz
+- 图像文件 .png / .tiff / .tif / .bmp / .jpg / .jpeg
+- 文本矩阵 .txt
+
+
+四、输出格式
+-------------
+- GeoJSON (.geojson) — 矢量多边形，可导入 GIS 工具
+- CSV (.csv) — 统计表格（编号、面积、周长、紧致度）
+- TXT (.txt) — 多边形坐标列表
+
+
+五、依赖库
+----------
+- numpy, scipy          — 数值计算
+- scikit-image          — 图像处理（分割、形态学、骨架化）
+- matplotlib            — 可视化
+- PyQt5                 — 桌面界面
+- shapely               — 多边形几何计算
+- networkx              — 图算法（备用）
+- opencv-python         — 图像文件读写
+
+
+六、性能参考
+------------
+- 512×512 数据：< 3 秒
+- 1024×1024 数据：< 8 秒
+- 2048×2048 数据：< 20 秒
+（测试环境：Intel i5 CPU, 16GB RAM）

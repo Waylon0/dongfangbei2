@@ -41,7 +41,7 @@ def compute_local_direction(skel: np.ndarray, r: int, c: int, window: int = 5) -
     if cov.shape != (2, 2):
         return (0.0, 0.0)
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
-    principal = eigenvectors[:, -1]  # 最大特征值对应的特征向量
+    principal = eigenvectors[:, -1]
     return (float(principal[1]), float(principal[0]))
 
 
@@ -54,3 +54,42 @@ def angle_between(v1: Tuple[float, float], v2: Tuple[float, float]) -> float:
         return 180.0
     cos = np.clip(dot / (n1 * n2), -1.0, 1.0)
     return float(np.degrees(np.arccos(cos)))
+
+
+def compactness(region: np.ndarray) -> float:
+    """计算区域的紧致度 = 周长² / (4π × 面积)，圆形=1，线状>1"""
+    from skimage.measure import perimeter
+    area = region.sum()
+    if area < 1:
+        return float('inf')
+    p = perimeter(region)
+    return (p * p) / (4 * np.pi * area)
+
+
+def aspect_ratio(region: np.ndarray) -> float:
+    """计算区域的宽高比（通过 PCA 主方向）"""
+    coords = np.argwhere(region)
+    if len(coords) < 3:
+        return 1.0
+    centered = coords - coords.mean(axis=0)
+    cov = np.cov(centered[:, 1], centered[:, 0])
+    eigenvalues, _ = np.linalg.eigh(cov)
+    if eigenvalues.min() < 1e-10:
+        return float('inf')
+    return float(eigenvalues.max() / eigenvalues.min())
+
+
+def fault_length_from_contour(contour: list) -> float:
+    """从多边形轮廓估算断层长度（取轮廓周长的一半作为中线近似）"""
+    if len(contour) < 2:
+        return 0.0
+    pts = np.array(contour)
+    perimeter = float(np.sum(np.linalg.norm(pts[1:] - pts[:-1], axis=1)))
+    return perimeter / 2.0
+
+
+def fault_length_from_binary(binary: np.ndarray) -> float:
+    """从二值断层区域估算总长度（骨架化后像素数）"""
+    from skimage.morphology import skeletonize
+    skel = skeletonize(binary.astype(bool))
+    return float(skel.sum())
