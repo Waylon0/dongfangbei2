@@ -523,6 +523,36 @@ class MainWindow(QMainWindow):
 
         right_layout.addWidget(self.tabs)
 
+        # 裁切区域
+        crop_grp = QGroupBox("裁切区域（加载大数据后勾选使用）")
+        crop_layout = QHBoxLayout()
+        crop_layout.addWidget(QLabel("行:"))
+        self._crop_r1 = QSpinBox()
+        self._crop_r1.setRange(0, 2000)
+        self._crop_r1.setValue(500)
+        crop_layout.addWidget(self._crop_r1)
+        crop_layout.addWidget(QLabel("–"))
+        self._crop_r2 = QSpinBox()
+        self._crop_r2.setRange(0, 2000)
+        self._crop_r2.setValue(900)
+        crop_layout.addWidget(self._crop_r2)
+        crop_layout.addWidget(QLabel("  列:"))
+        self._crop_c1 = QSpinBox()
+        self._crop_c1.setRange(0, 2000)
+        self._crop_c1.setValue(150)
+        crop_layout.addWidget(self._crop_c1)
+        crop_layout.addWidget(QLabel("–"))
+        self._crop_c2 = QSpinBox()
+        self._crop_c2.setRange(0, 2000)
+        self._crop_c2.setValue(550)
+        crop_layout.addWidget(self._crop_c2)
+        self._crop_enabled = QCheckBox("启用裁切")
+        self._crop_enabled.setChecked(False)
+        crop_layout.addWidget(self._crop_enabled)
+        crop_layout.addStretch()
+        crop_grp.setLayout(crop_layout)
+        right_layout.addWidget(crop_grp)
+
         # 底部操作栏
         btn_layout = QHBoxLayout()
 
@@ -588,14 +618,24 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "格式错误",
                     f"数据维度必须为2维，当前为 {self._data.ndim} 维，形状 {self._data.shape}")
                 return
+            h, w = self._data.shape
+            # 自动设裁切范围为图片中心 400x400
+            r1, r2 = max(0, h//2-200), min(h, h//2+200)
+            c1, c2 = max(0, w//2-200), min(w, w//2+200)
+            self._crop_r1.setRange(0, h-1); self._crop_r1.setValue(r1)
+            self._crop_r2.setRange(0, h);   self._crop_r2.setValue(r2)
+            self._crop_c1.setRange(0, w-1); self._crop_c1.setValue(c1)
+            self._crop_c2.setRange(0, w);   self._crop_c2.setValue(c2)
+            self._crop_enabled.setChecked(True)
             self._show_raw()
             self.run_btn.setEnabled(True)
             size_mb = self._data.nbytes / (1024 * 1024)
             self._status_label.setText(
                 f"已加载: {os.path.basename(path)}  |  "
-                f"尺寸: {self._data.shape[1]}×{self._data.shape[0]}  |  "
+                f"尺寸: {w}×{h}  |  "
                 f"大小: {size_mb:.1f} MB  |  "
-                f"值域: [{self._data.min():.3f}, {self._data.max():.3f}]")
+                f"值域: [{self._data.min():.3f}, {self._data.max():.3f}]  |  "
+                f"裁切: {r1}:{r2}, {c1}:{c2}")
         except Exception as e:
             QMessageBox.critical(self, "加载失败", f"无法读取文件：\n{str(e)}")
 
@@ -615,6 +655,7 @@ class MainWindow(QMainWindow):
 
         self._data = generate_synthetic_data(
             shape=(rows, cols), n_faults=n_faults, noise_level=noise)
+        self._crop_enabled.setChecked(False)
         self._show_raw()
         self.run_btn.setEnabled(True)
         self._status_label.setText(
@@ -633,8 +674,16 @@ class MainWindow(QMainWindow):
         self.run_btn.setText("⏳  处理中...")
         self._progress.show()
 
+        # 裁切
+        if self._crop_enabled.isChecked():
+            r1, r2 = self._crop_r1.value(), self._crop_r2.value()
+            c1, c2 = self._crop_c1.value(), self._crop_c2.value()
+            self._crop_data = self._data[r1:r2, c1:c2].copy()
+        else:
+            self._crop_data = self._data.copy()
+
         cfg = self.param_panel.get_config()
-        self._worker = PipelineWorker(self._data.copy(), cfg)
+        self._worker = PipelineWorker(self._crop_data, cfg)
         self._worker.finished.connect(self._on_result)
         self._worker.error.connect(self._on_error)
         self._worker.start()
@@ -645,6 +694,9 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.run_btn.setText("▶  运行断层追踪流水线")
 
+        display_data = getattr(self, '_crop_data', self._data)
+
+        self._canvases['raw'].imshow(display_data, "原始数据", cmap='viridis')
         self._canvases['smoothed'].imshow(
             result['data_smoothed'], "平滑/滤波后数据")
         self._canvases['binary_morph'].imshow(
@@ -654,7 +706,7 @@ class MainWindow(QMainWindow):
         self._canvases['skeleton'].imshow(
             result['skeleton'], f"骨架 — {len(result['junctions'])} 个交叉点", cmap='gray')
         self._canvases['polygons'].plot_polygons(
-            self._data,
+            display_data,
             result['filtered'],
             f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s")
 
