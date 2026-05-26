@@ -20,7 +20,8 @@ def _extract_skeleton_polygons(binary_mask: np.ndarray,
                                   buffer_radius: int = 2,
                                   smooth_sigma: float = 1.0,
                                   max_aspect_ratio: float = 20.0,
-                                  max_compactness: float = 5.0) -> tuple:
+                                  max_compactness: float = 5.0,
+                                  precomputed_skel: np.ndarray = None) -> tuple:
     """骨架化 → 在交叉点拆分为独立线段 → 窄缓冲 → 精细轮廓。
 
     关键：骨架分叉处断开，保证每条断层独立输出，不会因为二值区域
@@ -31,7 +32,10 @@ def _extract_skeleton_polygons(binary_mask: np.ndarray,
     se8 = np.ones((3, 3), dtype=bool)
 
     # 1. 骨架化
-    skel = skeletonize(binary_mask.astype(bool))
+    if precomputed_skel is not None:
+        skel = precomputed_skel
+    else:
+        skel = skeletonize(binary_mask.astype(bool))
     if skel.sum() == 0:
         return [], []
 
@@ -102,7 +106,8 @@ def extract_fault_polygons(binary_mask: np.ndarray,
                             max_aspect_ratio: float = 20.0,
                             max_compactness: float = 5.0,
                             polygon_mode: str = 'region',
-                            skeleton_buffer: int = 2) -> tuple:
+                            skeleton_buffer: int = 2,
+                            precomputed_skel: np.ndarray = None) -> tuple:
     """从断层区域掩膜提取闭合多边形轮廓。
 
     参数：
@@ -124,7 +129,8 @@ def extract_fault_polygons(binary_mask: np.ndarray,
         return _extract_skeleton_polygons(
             binary_mask, min_component_area=min_component_area,
             buffer_radius=skeleton_buffer, smooth_sigma=skel_smooth,
-            max_aspect_ratio=max_aspect_ratio, max_compactness=max_compactness)
+            max_aspect_ratio=max_aspect_ratio, max_compactness=max_compactness,
+            precomputed_skel=precomputed_skel)
 
     # --- region 模式（原有逻辑） ---
     labeled, n_features = label(binary_mask)
@@ -281,20 +287,24 @@ def _cluster_by_direction(segment_masks: list, segment_dirs: list,
         if ra != rb:
             parent[ra] = rb
 
+    # 预计算 cos 阈值，避免循环内 arccos → degrees 转换
+    cos_threshold = np.cos(np.radians(angle_threshold))
+
+    # 预膨胀所有片段，避免 O(n²) 次重复 binary_dilation 调用
+    d3 = disk(3)
+    dilated_masks = [binary_dilation(m, d3) if segment_dirs[i] is not None else None
+                     for i, m in enumerate(segment_masks)]
+
     for i in range(n):
         if segment_dirs[i] is None:
             continue
         for j in range(i + 1, n):
             if segment_dirs[j] is None:
                 continue
-            from scipy.ndimage import binary_dilation
-            dilated_i = binary_dilation(segment_masks[i], disk(3))
-            dilated_j = binary_dilation(segment_masks[j], disk(3))
-            if not (dilated_i & dilated_j).any():
+            if not (dilated_masks[i] & dilated_masks[j]).any():
                 continue
             dot = abs(np.dot(segment_dirs[i], segment_dirs[j]))
-            angle = np.degrees(np.arccos(np.clip(dot, 0, 1)))
-            if angle < angle_threshold:
+            if dot > cos_threshold:
                 union(i, j)
 
     groups_dict = {}
@@ -308,7 +318,6 @@ def _cluster_by_direction(segment_masks: list, segment_dirs: list,
 def _dilate_to_original(skel_part: np.ndarray,
                          original_region: np.ndarray) -> np.ndarray:
     """将骨架片段膨胀回原始区域的大小"""
-    from scipy.ndimage import distance_transform_edt, binary_dilation
     dilated = binary_dilation(skel_part, structure=disk(3), iterations=5)
     return dilated & original_region
 

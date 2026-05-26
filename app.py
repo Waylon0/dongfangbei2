@@ -26,6 +26,8 @@ from PyQt5.QtGui import QFont
 
 import matplotlib
 matplotlib.use('Qt5Agg')
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
@@ -404,6 +406,17 @@ class AiDialog(QDialog):
         lines.append(f"最小面积：{result.get('min_area', 0)} 像素²")
         lines.append(f"最大面积：{result.get('max_area', 0)} 像素²")
         lines.append(f"处理耗时：{result.get('elapsed', 0)} 秒")
+        st = result.get('step_times', {})
+        if st:
+            lines.append("\n--- 各步骤耗时 ---")
+            lines.append(f"预处理:      {st.get('preprocess', 0):.3f}s")
+            lines.append(f"二值化:      {st.get('binarize', 0):.3f}s")
+            lines.append(f"形态学:      {st.get('morph', 0):.3f}s")
+            lines.append(f"断层追踪:    {st.get('track', 0):.3f}s")
+            lines.append(f"轮廓提取:    {st.get('contour_extract', 0):.3f}s")
+            lines.append(f"矢量化:      {st.get('vectorize', 0):.3f}s")
+            if st.get('multiscale', 0) > 0:
+                lines.append(f"多尺度融合:  {st.get('multiscale', 0):.3f}s")
         if result.get('areas'):
             areas = sorted(result['areas'], reverse=True)
             lines.append(f"\n前5大面积：{areas[:5]}")
@@ -626,7 +639,7 @@ class MainWindow(QMainWindow):
             self._crop_r2.setRange(0, h);   self._crop_r2.setValue(r2)
             self._crop_c1.setRange(0, w-1); self._crop_c1.setValue(c1)
             self._crop_c2.setRange(0, w);   self._crop_c2.setValue(c2)
-            self._crop_enabled.setChecked(True)
+            self._crop_enabled.setChecked(False)
             self._show_raw()
             self.run_btn.setEnabled(True)
             size_mb = self._data.nbytes / (1024 * 1024)
@@ -634,8 +647,7 @@ class MainWindow(QMainWindow):
                 f"已加载: {os.path.basename(path)}  |  "
                 f"尺寸: {w}×{h}  |  "
                 f"大小: {size_mb:.1f} MB  |  "
-                f"值域: [{self._data.min():.3f}, {self._data.max():.3f}]  |  "
-                f"裁切: {r1}:{r2}, {c1}:{c2}")
+                f"值域: [{self._data.min():.3f}, {self._data.max():.3f}]")
         except Exception as e:
             QMessageBox.critical(self, "加载失败", f"无法读取文件：\n{str(e)}")
 
@@ -709,6 +721,21 @@ class MainWindow(QMainWindow):
             display_data,
             result['filtered'],
             f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s")
+
+        # 控制台打印每步耗时
+        st = result.get('step_times', {})
+        if st:
+            print(f"\n=== 流水线耗时分解 ===")
+            print(f"  预处理:      {st.get('preprocess', 0):.3f}s")
+            print(f"  二值化:      {st.get('binarize', 0):.3f}s")
+            print(f"  形态学:      {st.get('morph', 0):.3f}s")
+            print(f"  断层追踪:    {st.get('track', 0):.3f}s")
+            print(f"  轮廓提取:    {st.get('contour_extract', 0):.3f}s")
+            print(f"  矢量化:      {st.get('vectorize', 0):.3f}s")
+            if st.get('multiscale', 0) > 0:
+                print(f"  多尺度融合:  {st.get('multiscale', 0):.3f}s")
+            print(f"  总耗时:      {result['elapsed']:.3f}s")
+            print("=" * 30)
 
         self._status_label.setText(
             f"完成  |  "

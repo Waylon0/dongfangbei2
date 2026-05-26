@@ -46,8 +46,10 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         dict: 包含所有处理步骤的中间结果和最终统计
     """
     t0 = time.perf_counter()
+    step_times = {}
 
     # --- 步骤 1: 预处理（归一化 + 可选Gabor + 去噪） ---
+    t1 = time.perf_counter()
     data_norm = normalize(data)
 
     if cfg.use_gabor:
@@ -72,7 +74,10 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         except Exception as e:
             print(f"[pipeline] UNet 预测失败，回退到传统方法: {e}")
 
+    step_times['preprocess'] = round(time.perf_counter() - t1, 3)
+
     # --- 步骤 2: 二值化 ---
+    t2 = time.perf_counter()
     mode = cfg.threshold_mode
     if cfg.use_adaptive_threshold and mode == 'otsu':
         mode = 'adaptive'
@@ -95,7 +100,10 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         thresh = threshold_otsu(smoothed) * cfg.otsu_scale
         binary_before_morph = (smoothed >= thresh).astype(np.uint8)
 
+    step_times['binarize'] = round(time.perf_counter() - t2, 3)
+
     # --- 步骤 3: 形态学处理 ---
+    t3 = time.perf_counter()
     binary = segment_fault_regions(
         data, sigma=cfg.gaussian_sigma, otsu_scale=cfg.otsu_scale,
         closing_radius=cfg.closing_radius, opening_radius=cfg.opening_radius,
@@ -112,13 +120,18 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         hysteresis_high=cfg.hysteresis_high,
         morph_order=cfg.morph_order,
         morph_kernel_shape=cfg.morph_kernel_shape,
+        precomputed_binary=binary_before_morph,
     )
+
+    step_times['morph'] = round(time.perf_counter() - t3, 3)
 
     # --- 步骤 3.5: 断层追踪 ---
     # skeleton模式跳过track_faults：segment的闭运算已连接断缝，
     # track的膨胀反而合并所有断层，之后又被skeletonize一次浪费计算
+    t_track = 0.0
     binary_before_track = binary.copy()
     if cfg.polygon_mode != 'skeleton':
+        t_track_start = time.perf_counter()
         binary = track_faults(
             binary, max_link_distance=cfg.track_max_link_distance,
             angle_weight=cfg.track_angle_weight,
@@ -127,8 +140,13 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
             dilate_iterations=cfg.track_dilate_iterations,
             raw_data=None,
         )
+        t_track = round(time.perf_counter() - t_track_start, 3)
+    step_times['track'] = t_track
 
     # --- 步骤 4: 轮廓提取（含形状过滤） ---
+    t4 = time.perf_counter()
+    # 预先骨架化一次，避免 extract_fault_polygons 内部重复 skeletonize
+    skel = skeletonize(binary.astype(bool))
     contours, components = extract_fault_polygons(
         binary, min_component_area=cfg.min_component_area,
         separate_intersections=cfg.separate_intersections,
@@ -137,13 +155,16 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         max_compactness=cfg.max_compactness,
         polygon_mode=cfg.polygon_mode,
         skeleton_buffer=cfg.skeleton_buffer,
+        precomputed_skel=skel if cfg.polygon_mode == 'skeleton' else None,
     )
 
-    # --- 步骤 5: 骨架 + 交叉点 ---
-    skel = skeletonize(binary.astype(bool))
+    # --- 步骤 5: 交叉点 ---
     junctions = _find_junctions(skel)
 
+    step_times['contour_extract'] = round(time.perf_counter() - t4, 3)
+
     # --- 步骤 6: 矢量化 + 过滤 ---
+    t5 = time.perf_counter()
     vectorized = [
         simplify_polygon(c, cfg.dp_epsilon, cfg.smooth_iterations,
                          dp_mode=cfg.dp_mode, dp_ratio=cfg.dp_ratio)
@@ -152,8 +173,12 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
     filtered = filter_by_area(vectorized, cfg.min_polygon_area)
     areas = [polygon_area(p) for p in filtered]
 
+    step_times['vectorize'] = round(time.perf_counter() - t5, 3)
+
     # --- 多尺度融合 ---
+    t_ms = 0.0
     if cfg.scales and len(cfg.scales) > 1:
+        t_ms_start = time.perf_counter()
         all_polygons = [filtered]
         all_areas_list = [areas]
         for scale_sigma in cfg.scales[1:]:
@@ -199,6 +224,8 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
             all_areas_list.append(areas_s)
         filtered, areas = merge_multiscale_results(
             all_polygons, all_areas_list, cfg.dedup_overlap_threshold)
+        t_ms = round(time.perf_counter() - t_ms_start, 3)
+    step_times['multiscale'] = t_ms
 
     # --- 统计 ---
     elapsed = time.perf_counter() - t0
@@ -227,4 +254,5 @@ def run_pipeline(data: np.ndarray, cfg: Config) -> dict:
         'min_area': round(min_area, 2),
         'max_area': round(max_area, 2),
         'count': len(filtered),
+        'step_times': step_times,
     }

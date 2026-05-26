@@ -13,7 +13,7 @@ from src.pipeline import run_pipeline
 from src.vectorize import export_geojson
 
 # 裁切范围：None=全图, (r1, r2, c1, c2)=子区域
-CROP = (500, 900, 150, 550)  # 中心 400x400
+CROP = None  # 默认全图；如需裁切改为 (r1, r2, c1, c2)
 
 print("=" * 50)
 print("任务2：真实数据验证")

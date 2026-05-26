@@ -90,7 +90,8 @@ def segment_fault_regions(data: np.ndarray,
                            hysteresis_low: float = 0.3,
                            hysteresis_high: float = 0.6,
                            morph_order: str = 'open_first',
-                           morph_kernel_shape: str = 'disk') -> np.ndarray:
+                           morph_kernel_shape: str = 'disk',
+                           precomputed_binary: np.ndarray = None) -> np.ndarray:
     """从属性数据中分割出断层区域。
 
     参数：
@@ -117,45 +118,48 @@ def segment_fault_regions(data: np.ndarray,
     返回：
         二值掩膜 (0/1)，1 表示断层区域
     """
-    data = normalize(data)
+    if precomputed_binary is not None:
+        binary = precomputed_binary.astype(bool)
+    else:
+        data = normalize(data)
 
-    # --- 可选 Gabor 方向性滤波 ---
-    if use_gabor:
-        from .preprocess import apply_gabor_filter
-        data = apply_gabor_filter(data, frequency=gabor_frequency,
-                                   n_angles=gabor_angles)
+        # --- 可选 Gabor 方向性滤波 ---
+        if use_gabor:
+            from .preprocess import apply_gabor_filter
+            data = apply_gabor_filter(data, frequency=gabor_frequency,
+                                       n_angles=gabor_angles)
 
-    # --- 可选中值滤波 ---
-    if use_median_filter:
-        size = max(3, median_filter_size)
-        if size % 2 == 0:
-            size += 1
-        data = median_filter(data, size=size)
+        # --- 可选中值滤波 ---
+        if use_median_filter:
+            size = max(3, median_filter_size)
+            if size % 2 == 0:
+                size += 1
+            data = median_filter(data, size=size)
 
-    # --- 高斯滤波去噪 ---
-    smoothed = gaussian_filter(data, sigma=sigma)
+        # --- 高斯滤波去噪 ---
+        smoothed = gaussian_filter(data, sigma=sigma)
 
-    # --- 二值化 ---
-    # 兼容旧接口
-    mode = threshold_mode
-    if use_adaptive_threshold and mode == 'otsu':
-        mode = 'adaptive'
+        # --- 二值化 ---
+        # 兼容旧接口
+        mode = threshold_mode
+        if use_adaptive_threshold and mode == 'otsu':
+            mode = 'adaptive'
 
-    if mode == 'fixed':
-        binary = smoothed >= fixed_threshold
-    elif mode == 'hysteresis':
-        binary = _hysteresis_threshold(smoothed, hysteresis_low, hysteresis_high)
-    elif mode == 'adaptive':
-        block = max(3, adaptive_block_size)
-        if block % 2 == 0:
-            block += 1
-        img_uint8 = (smoothed * 255).astype(np.uint8)
-        local_thresh = threshold_local(img_uint8, block, method='gaussian',
-                                        offset=adaptive_c * 255)
-        binary = smoothed >= (local_thresh / 255.0)
-    else:  # 'otsu'
-        thresh = threshold_otsu(smoothed) * otsu_scale
-        binary = smoothed >= thresh
+        if mode == 'fixed':
+            binary = smoothed >= fixed_threshold
+        elif mode == 'hysteresis':
+            binary = _hysteresis_threshold(smoothed, hysteresis_low, hysteresis_high)
+        elif mode == 'adaptive':
+            block = max(3, adaptive_block_size)
+            if block % 2 == 0:
+                block += 1
+            img_uint8 = (smoothed * 255).astype(np.uint8)
+            local_thresh = threshold_local(img_uint8, block, method='gaussian',
+                                            offset=adaptive_c * 255)
+            binary = smoothed >= (local_thresh / 255.0)
+        else:  # 'otsu'
+            thresh = threshold_otsu(smoothed) * otsu_scale
+            binary = smoothed >= thresh
 
     # --- 形态学处理 ---
     se_open = _make_kernel(opening_radius, morph_kernel_shape)
