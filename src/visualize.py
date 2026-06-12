@@ -5,10 +5,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from matplotlib.patches import Polygon as MplPolygon
 from typing import List
 from .vectorize import polygon_area
+
 
 
 def plot_result(attr_data: np.ndarray,
@@ -36,12 +35,10 @@ def plot_result(attr_data: np.ndarray,
         for c in contours:
             ax.plot(c[:, 1], c[:, 0], 'gray', linewidth=0.5, alpha=0.4)
 
-    # 多边形
-    colors = cm.tab10.colors
+    # 多边形 — 统一红色
     for i, poly in enumerate(polygons):
-        color = colors[i % len(colors)]
-        ax.plot(poly[:, 1], poly[:, 0], color=color, linewidth=2.0, label=f'Fault {i}')
-        ax.fill(poly[:, 1], poly[:, 0], color=color, alpha=0.1)
+        ax.plot(poly[:, 1], poly[:, 0], color='#e6194b', linewidth=2.0, label=f'Fault {i}')
+        ax.fill(poly[:, 1], poly[:, 0], color='#e6194b', alpha=0.1)
 
     ax.set_title(title)
     ax.set_xlabel('Col')

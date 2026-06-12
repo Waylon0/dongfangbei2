@@ -46,7 +46,7 @@ class Config:
     max_compactness: float = 10.0     # 最大紧致度（周长²/面积，越大越不规则）
 
     # --- 轮廓提取 ---
-    contour_smooth_sigma: float = 2.0 # 轮廓平滑σ（skeleton模式自动限制<=1.0）
+    contour_smooth_sigma: float = 0.0 # 轮廓平滑σ（0=不平滑，保留原始断层边界棱角）
     polygon_mode: str = 'skeleton'    # 多边形模式：'region'粗区域 / 'skeleton'骨架细线
     skeleton_buffer: int = 2          # skeleton模式下骨架缓冲半径（1~3像素）
 
@@ -55,9 +55,9 @@ class Config:
 
     # --- 多边形简化 ---
     dp_mode: str = 'absolute'         # 'absolute'绝对像素 / 'relative'周长比例
-    dp_epsilon: float = 3.0           # DP简化容差（dp_mode='absolute'时像素值）
+    dp_epsilon: float = 1.0           # DP简化容差（dp_mode='absolute'时像素值，越小顶点越多）
     dp_ratio: float = 0.005           # DP简化比例（dp_mode='relative'时周长×该比例）
-    smooth_iterations: int = 2        # Chaikin平滑迭代次数
+    smooth_iterations: int = 0        # Chaikin平滑迭代次数（0=不平滑，保留断层多边形棱角）
 
     # --- 多尺度 ---
     scales: list = []                 # 多尺度σ列表（单尺度用 []）

@@ -61,7 +61,13 @@ def _dp_recursive(points: np.ndarray, epsilon: float) -> np.ndarray:
 
 
 def chaikin_smooth(points: np.ndarray, iterations: int = 2) -> np.ndarray:
-    """Chaikin 角点切割平滑"""
+    """Chaikin 角点切割平滑（将尖锐多边形转为平滑曲线）。
+
+    注意：此算法每次迭代会在每条边的 1/4 和 3/4 处插入新点，
+    并移除原始顶点，从而将多边形棱角逐步磨圆。
+    断层多边形需要保留原始几何棱角，不建议启用此平滑。
+    如需保留断层真实形态，请设置 smooth_iterations=0。
+    """
     if len(points) < 3:
         return points
 
@@ -97,21 +103,24 @@ def polygon_perimeter(points: np.ndarray) -> float:
 
 def simplify_polygon(contour: List[Tuple[float, float]],
                       dp_epsilon: float = 3.0,
-                      smooth_iterations: int = 2,
+                      smooth_iterations: int = 0,
                       dp_mode: str = 'absolute',
                       dp_ratio: float = 0.005) -> np.ndarray:
-    """对单个多边形轮廓做简化和平滑。
+    """对单个多边形轮廓做简化，输出闭合的断层多边形。
+
+    DP 简化保留关键拐点（棱角分明），适合断层几何。
+    Chaikin 平滑会将棱角磨成曲线 — 断层多边形不建议启用（smooth_iterations=0）。
 
     参数：
         contour: 轮廓点列表 [(row, col), ...]
         dp_epsilon: DP容差（dp_mode='absolute'时绝对像素值）
-        smooth_iterations: Chaikin平滑迭代次数
+        smooth_iterations: Chaikin平滑迭代次数（0=不平滑，保留断层棱角）
         dp_mode: 'absolute' 绝对像素 / 'relative' 周长比例
         dp_ratio: dp_mode='relative'时 epsilon = 周长 × dp_ratio
                   建议 0.001~0.01（典型值 0.005）
 
     返回：
-        (N, 2) numpy数组 [row, col]
+        (N, 2) numpy数组 [row, col]，首尾闭合
     """
     pts = np.array(contour, dtype=np.float64)
 

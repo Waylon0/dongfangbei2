@@ -93,3 +93,146 @@ def fault_length_from_binary(binary: np.ndarray) -> float:
     from skimage.morphology import skeletonize
     skel = skeletonize(binary.astype(bool))
     return float(skel.sum())
+
+
+def group_fault_polygons(polygons: list,
+                          max_gap_distance: float = 30.0,
+                          angle_threshold: float = 30.0,
+                          lateral_threshold: float = 20.0) -> list:
+    """将属于同一条地质断层的多边形碎片归为一组。
+
+    一条断层可能因为噪声、遮挡或阈值原因被断成多个不连通的多边形。
+    此函数按空间邻近度 + 方向一致性 + 共线性将碎片聚类，
+    同组的多边形视为同一条断层，应在可视化中使用相同颜色。
+
+    算法：
+    1. 对每个多边形计算质心、PCA 主方向和两个端点
+    2. 两两比较：端点距离 < max_gap_distance 且
+       方向夹角 < angle_threshold 且
+       横向偏移 < lateral_threshold → 归为同一断层
+    3. 并查集连通分量 → 输出分组标签
+
+    参数：
+        polygons: 多边形列表，每个为 (N,2) numpy 数组 [row, col]
+        max_gap_distance: 两个碎片端点间的最大允许距离（像素）
+        angle_threshold: 主方向夹角阈值（度）
+        lateral_threshold: 横向偏移阈值（像素），限制碎片不能偏离太远
+
+    返回：
+        groups: 列表，每个元素为该组的多边形索引列表 [[idx, idx], ...]
+    """
+    n = len(polygons)
+    if n <= 1:
+        return [list(range(n))] if n == 1 else []
+
+    # --- 1. 提取每个多边形的特征 ---
+    centroids = []
+    directions = []   # 单位主方向向量 (dr, dc)
+    endpoints = []    # 两个端点 [(r1,c1), (r2,c2)]
+
+    for poly in polygons:
+        arr = np.array(poly)
+        # 去掉闭合点（首尾相同）
+        if len(arr) > 1 and np.allclose(arr[0], arr[-1], atol=1e-6):
+            arr = arr[:-1]
+        if len(arr) < 2:
+            centroids.append(None)
+            directions.append(None)
+            endpoints.append(None)
+            continue
+
+        centroid = arr.mean(axis=0)
+        centroids.append(centroid)
+
+        # PCA 主方向
+        centered = arr - centroid
+        cov = np.cov(centered[:, 1], centered[:, 0])
+        if cov.shape == (2, 2):
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            principal = eigenvectors[:, -1]  # (dc, dr)
+            direction = np.array([principal[1], principal[0]])  # (dr, dc)
+        else:
+            direction = np.array([0.0, 0.0])
+        norm = np.linalg.norm(direction)
+        if norm > 1e-10:
+            direction = direction / norm
+        directions.append(direction)
+
+        # 找到沿主方向的两个最远端点
+        if norm > 1e-10:
+            proj = np.dot(centered, direction)
+            idx1, idx2 = np.argmin(proj), np.argmax(proj)
+            endpoints.append((tuple(arr[idx1]), tuple(arr[idx2])))
+        else:
+            endpoints.append(None)
+
+    # --- 2. 并查集聚类 ---
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    cos_angle = np.cos(np.radians(angle_threshold))
+
+    for i in range(n):
+        if directions[i] is None:
+            continue
+        for j in range(i + 1, n):
+            if directions[j] is None:
+                continue
+            if find(i) == find(j):
+                continue
+
+            # 方向一致性
+            dot = abs(np.dot(directions[i], directions[j]))
+            if dot < cos_angle:
+                continue
+
+            # 端点间最小距离
+            ep_i = endpoints[i]
+            ep_j = endpoints[j]
+            if ep_i is None or ep_j is None:
+                continue
+            d1 = np.linalg.norm(np.array(ep_i[0]) - np.array(ep_j[0]))
+            d2 = np.linalg.norm(np.array(ep_i[0]) - np.array(ep_j[1]))
+            d3 = np.linalg.norm(np.array(ep_i[1]) - np.array(ep_j[0]))
+            d4 = np.linalg.norm(np.array(ep_i[1]) - np.array(ep_j[1]))
+            min_dist = min(d1, d2, d3, d4)
+            if min_dist > max_gap_distance:
+                continue
+
+            # 横向偏移：两个质心在垂直方向上的距离
+            avg_dir = directions[i] + directions[j]
+            avg_norm = np.linalg.norm(avg_dir)
+            if avg_norm < 1e-10:
+                continue
+            avg_dir = avg_dir / avg_norm
+            # 垂直方向
+            perp = np.array([-avg_dir[1], avg_dir[0]])
+            centroid_vec = centroids[j] - centroids[i]
+            lateral = abs(np.dot(centroid_vec, perp))
+            if lateral > lateral_threshold:
+                continue
+
+            union(i, j)
+
+    # --- 3. 收集分组 ---
+    groups_dict = {}
+    for i in range(n):
+        root = find(i)
+        groups_dict.setdefault(root, []).append(i)
+
+    # 按组内最大面积排序（大断层优先）
+    from .vectorize import polygon_area
+    groups = list(groups_dict.values())
+    groups.sort(key=lambda g: max(polygon_area(polygons[i]) for i in g), reverse=True)
+
+    return groups

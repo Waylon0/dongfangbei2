@@ -39,6 +39,7 @@ from src.preprocess import load_attribute_data
 from src.synthetic import generate_synthetic_data
 
 
+
 # --- matplotlib 画布 ---
 
 class MplCanvas(FigureCanvasQTAgg):
