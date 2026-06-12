@@ -1,4 +1,4 @@
-"""PyBO 导入器 — 通过 NDP 框架连接 GeoEast 数据库。
+r"""PyBO 导入器 — 通过 NDP 框架连接 GeoEast 数据库。
 
 前置条件:
     - Python 3.9 (使用 D:\GeoEastRC\support\miniconda3\envs\nv\python.exe)

@@ -21,7 +21,7 @@ class Config:
 
     # --- 二值化 ---
     threshold_mode: str = 'otsu'      # 'otsu' / 'fixed' / 'adaptive' / 'hysteresis'
-    otsu_scale: float = 0.8           # Otsu阈值缩放（>1更保守，<1更敏感）
+    otsu_scale: float = 1.0           # Otsu阈值缩放（>1更保守，<1更敏感）
     fixed_threshold: float = 0.6      # 固定阈值（threshold_mode='fixed'时生效）
     use_adaptive_threshold: bool = False  # 使用局部自适应阈值（已废弃，改用threshold_mode）
     adaptive_block_size: int = 35     # 自适应阈值局部窗口大小（奇数）
@@ -33,8 +33,8 @@ class Config:
 
     # --- 形态学处理 ---
     morph_order: str = 'open_first'   # 操作顺序：'open_first'先开后闭 / 'close_first'先闭后开
-    closing_radius: int = 2           # 闭运算半径（skeleton模式宜小，避免过度合并断层）
-    opening_radius: int = 1           # 开运算半径（去除噪点）
+    closing_radius: int = 3           # 闭运算半径（skeleton模式宜小，避免过度合并断层）
+    opening_radius: int = 2           # 开运算半径（去除噪点）
     morph_kernel_shape: str = 'disk'  # 结构元素形状：'disk'圆形 / 'ellipse'椭圆 / 'cross'十字
 
     # --- 断层分离 ---
@@ -60,11 +60,11 @@ class Config:
     smooth_iterations: int = 0        # Chaikin平滑迭代次数（0=不平滑，保留断层多边形棱角）
 
     # --- 多尺度 ---
-    scales: list = []                 # 多尺度σ列表（单尺度用 []）
+    scales: list = [1.0, 2.0]         # 多尺度σ列表（单尺度用 []）
     dedup_overlap_threshold: float = 0.5  # 去重重合度（IoU）
 
     # --- 断层追踪 ---
-    track_max_link_distance: float = 12.0   # 最大连接距离（像素）
+    track_max_link_distance: float = 30.0   # 最大连接距离（像素）
     track_angle_weight: float = 2.0         # 方向一致性权重（越大越严格）
     track_min_segment_length: int = 10      # 最小参与连接的片段长度
     track_dilate_radius: int = 1            # 连接后膨胀半径（skeleton模式用1，防止过度合并）

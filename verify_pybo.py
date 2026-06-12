@@ -15,10 +15,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-from pybo_importer import pybo, init as pybo_init
-
-# PyBO pre-init: must be called before instance() or Load()
-pybo_init()
+from pybo_importer import pybo  # _setup() runs automatically on import
 
 
 def step1_import():
