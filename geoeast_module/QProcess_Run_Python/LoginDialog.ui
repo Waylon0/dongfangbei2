@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>LoginDialog</class>
+ <widget class="QDialog" name="LoginDialog">
+  <property name="windowTitle"><string>GeoEast 数据库登录</string></property>
+  <property name="minimumSize"><width>340</width><height>280</height></property>
+  <layout class="QFormLayout">
+   <item row="0" column="0"><widget class="QLabel" name="lblDb"><string>数据库名:</string></widget></item>
+   <item row="0" column="1"><widget class="QLineEdit" name="lineEditDbName"/></item>
+   <item row="1" column="0"><widget class="QLabel" name="lblUser"><string>用户名:</string></widget></item>
+   <item row="1" column="1"><widget class="QLineEdit" name="lineEditUserName"/></item>
+   <item row="2" column="0"><widget class="QLabel" name="lblPass"><string>密码:</string></widget></item>
+   <item row="2" column="1"><widget class="QLineEdit" name="lineEditPassword">
+     <property name="echoMode"><enum>QLineEdit::Password</enum></property></widget></item>
+   <item row="3" column="0"><widget class="QLabel" name="lblProj"><string>项目名:</string></widget></item>
+   <item row="3" column="1"><widget class="QLineEdit" name="lineEditProject"/></item>
+   <item row="4" column="0"><widget class="QLabel" name="lblSurvey"><string>工区名:</string></widget></item>
+   <item row="4" column="1"><widget class="QLineEdit" name="lineEditSurvey"/></item>
+   <item row="5">
+    <layout class="QHBoxLayout">
+     <widget class="QPushButton" name="btnOk"><property name="text"><string>登录</string></property></widget>
+     <widget class="QPushButton" name="btnCancel"><property name="text"><string>取消</string></property></widget>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <connections>
+  <connection><sender>btnOk</sender><signal>clicked()</signal><receiver>LoginDialog</receiver><slot>accept()</slot></connection>
+  <connection><sender>btnCancel</sender><signal>clicked()</signal><receiver>LoginDialog</receiver><slot>reject()</slot></connection>
+ </connections>
+</ui>

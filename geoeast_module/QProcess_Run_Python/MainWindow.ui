@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="windowTitle">
+   <string>断层多边形自动追踪 — 东方杯赛题7</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout">
+    <item>
+     <widget class="QGroupBox" name="groupBoxProject">
+      <property name="title"><string>项目设置</string></property>
+      <layout class="QFormLayout">
+       <item row="0" column="0"><widget class="QLabel" name="lblProject"><string>项目名:</string></widget></item>
+       <item row="0" column="1"><widget class="QLineEdit" name="lineEditProject"><property name="text"><string>DFB_S7_WZY</string></property></widget></item>
+       <item row="1" column="0"><widget class="QLabel" name="lblSurvey"><string>工区:</string></widget></item>
+       <item row="1" column="1"><widget class="QLineEdit" name="lineEditSurvey"><property name="text"><string>survey1</string></property></widget></item>
+       <item row="2" column="0"><widget class="QLabel" name="lblGrid"><string>输入网格:</string></widget></item>
+       <item row="2" column="1"><widget class="QLineEdit" name="lineEditGrid"><property name="text"><string>fault_attr</string></property></widget></item>
+       <item row="3" column="0"><widget class="QLabel" name="lblOutput"><string>输出对象:</string></widget></item>
+       <item row="3" column="1"><widget class="QLineEdit" name="lineEditOutput"><property name="text"><string>fault_polygons</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBoxParams">
+      <property name="title"><string>算法参数</string></property>
+      <layout class="QFormLayout">
+       <item row="0" column="0"><widget class="QLabel" name="lblThreshold"><string>二值化模式:</string></widget></item>
+       <item row="0" column="1"><widget class="QComboBox" name="comboBoxThresholdMode">
+         <item><string>otsu</string></item><item><string>fixed</string></item>
+         <item><string>adaptive</string></item><item><string>hysteresis</string></item></widget></item>
+       <item row="1" column="0"><widget class="QLabel" name="lblOtsu"><string>Otsu缩放:</string></widget></item>
+       <item row="1" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxOtsuScale">
+         <property name="range"><double>0.1</double><double>3.0</double></property>
+         <property name="singleStep"><double>0.05</double></property>
+         <property name="value"><double>0.8</double></property></widget></item>
+       <item row="2" column="0"><widget class="QLabel" name="lblSigma"><string>高斯σ:</string></widget></item>
+       <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxGaussianSigma">
+         <property name="range"><double>0.0</double><double>10.0</double></property>
+         <property name="value"><double>1.5</double></property></widget></item>
+       <item row="3" column="0"><widget class="QLabel" name="lblClose"><string>闭运算半径:</string></widget></item>
+       <item row="3" column="1"><widget class="QSpinBox" name="spinBoxClosingRadius">
+         <property name="range"><int>0</int><int>20</int></property>
+         <property name="value"><int>2</int></property></widget></item>
+       <item row="4" column="0"><widget class="QLabel" name="lblOpen"><string>开运算半径:</string></widget></item>
+       <item row="4" column="1"><widget class="QSpinBox" name="spinBoxOpeningRadius">
+         <property name="range"><int>0</int><int>10</int></property>
+         <property name="value"><int>1</int></property></widget></item>
+       <item row="5" column="0"><widget class="QLabel" name="lblMinArea"><string>最小面积:</string></widget></item>
+       <item row="5" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMinPolygonArea">
+         <property name="range"><double>0.0</double><double>500.0</double></property>
+         <property name="value"><double>15.0</double></property></widget></item>
+       <item row="6" column="0"><widget class="QLabel" name="lblDp"><string>DP容差:</string></widget></item>
+       <item row="6" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxDpEpsilon">
+         <property name="range"><double>0.1</double><double>20.0</double></property>
+         <property name="value"><double>1.0</double></property></widget></item>
+       <item row="7" column="0"><widget class="QLabel" name="lblMode"><string>多边形模式:</string></widget></item>
+       <item row="7" column="1"><widget class="QComboBox" name="comboBoxPolygonMode">
+         <item><string>skeleton</string></item><item><string>region</string></item></widget></item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout">
+      <widget class="QPushButton" name="pushButtonRun">
+       <property name="text"><string>▶ 运行断层追踪</string></property>
+       <property name="minimumHeight"><int>36</int></property>
+      </widget>
+      <widget class="QPushButton" name="pushButtonStop">
+       <property name="text"><string>■ 停止</string></property>
+       <property name="minimumHeight"><int>36</int></property>
+      </widget>
+     </layout>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBoxResult">
+      <property name="title"><string>运行结果</string></property>
+      <layout class="QFormLayout">
+       <item row="0" column="0"><widget class="QLabel" name="lblCount"><string>断层数量:</string></widget></item>
+       <item row="0" column="1"><widget class="QLineEdit" name="lineEditFaultCount"><property name="readOnly"><bool>true</bool></property></widget></item>
+       <item row="1" column="0"><widget class="QLabel" name="lblTime"><string>耗时:</string></widget></item>
+       <item row="1" column="1"><widget class="QLineEdit" name="lineEditElapsed"><property name="readOnly"><bool>true</bool></property></widget></item>
+       <item row="2" column="0"><widget class="QLabel" name="lblArea"><string>总面积:</string></widget></item>
+       <item row="2" column="1"><widget class="QLineEdit" name="lineEditTotalArea"><property name="readOnly"><bool>true</bool></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QTextEdit" name="textEditLog">
+      <property name="readOnly"><bool>true</bool></property>
+      <property name="placeholderText"><string>运行日志...</string></property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+</ui>

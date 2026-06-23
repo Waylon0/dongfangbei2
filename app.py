@@ -10,7 +10,7 @@
 
 import sys
 import os
-import random
+import json
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QTabWidget, QScrollArea,
     QSpinBox, QDoubleSpinBox, QCheckBox, QFormLayout, QGroupBox,
     QSplitter, QStatusBar, QMessageBox, QProgressBar,
-    QInputDialog, QAction, QTextEdit, QDialog, QComboBox,
+    QInputDialog, QAction, QTextEdit, QDialog, QComboBox, QLineEdit,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -28,7 +28,7 @@ import matplotlib
 matplotlib.use('Qt5Agg')
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -49,6 +49,49 @@ class MplCanvas(FigureCanvasQTAgg):
         self.setParent(parent)
         self.ax = self.fig.add_subplot(111)
         self.fig.tight_layout()
+        self._press = None
+        self._xlim0 = None
+        self._ylim0 = None
+        self.mpl_connect('scroll_event', self._on_scroll)
+        self.mpl_connect('button_press_event', self._on_press)
+        self.mpl_connect('button_release_event', self._on_release)
+        self.mpl_connect('motion_notify_event', self._on_motion)
+
+    def _on_scroll(self, event):
+        if event.inaxes != self.ax:
+            return
+        scale = 0.85 if event.button == 'up' else 1.15
+        xdata, ydata = event.xdata, event.ydata
+        if xdata is None or ydata is None:
+            return
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+        new_w = (xlim[1] - xlim[0]) * scale
+        new_h = (ylim[1] - ylim[0]) * scale
+        rx = (xdata - xlim[0]) / (xlim[1] - xlim[0])
+        ry = (ydata - ylim[0]) / (ylim[1] - ylim[0])
+        self.ax.set_xlim([xdata - rx * new_w, xdata + (1 - rx) * new_w])
+        self.ax.set_ylim([ydata - ry * new_h, ydata + (1 - ry) * new_h])
+        self.draw_idle()
+
+    def _on_press(self, event):
+        if event.inaxes != self.ax or event.button != 1:
+            return
+        self._press = (event.xdata, event.ydata)
+        self._xlim0 = self.ax.get_xlim()
+        self._ylim0 = self.ax.get_ylim()
+
+    def _on_release(self, event):
+        self._press = None
+
+    def _on_motion(self, event):
+        if self._press is None or event.inaxes != self.ax:
+            return
+        dx = self._press[0] - event.xdata
+        dy = self._press[1] - event.ydata
+        self.ax.set_xlim([self._xlim0[0] + dx, self._xlim0[1] + dx])
+        self.ax.set_ylim([self._ylim0[0] + dy, self._ylim0[1] + dy])
+        self.draw_idle()
 
     def clear(self):
         self.ax.clear()
@@ -62,15 +105,29 @@ class MplCanvas(FigureCanvasQTAgg):
         self.fig.tight_layout()
         self.draw_idle()
 
-    def plot_polygons(self, data: np.ndarray, polygons: list, title: str = ""):
+    def plot_polygons(self, data: np.ndarray, polygons: list, title: str = "",
+                      confidences: list = None):
         self.ax.clear()
         self.ax.imshow(data, cmap='gray', origin='upper', aspect='auto')
-        for poly in polygons:
-            arr = np.array(poly)
-            if arr.ndim == 2 and arr.shape[1] >= 2:
-                self.ax.fill(arr[:, 1], arr[:, 0],
-                           color='#e6194b', alpha=0.45, edgecolor='#cc0033',
-                           linewidth=1.8)
+        if confidences and len(confidences) == len(polygons):
+            import matplotlib.colors as mcolors
+            cmap = mcolors.LinearSegmentedColormap.from_list(
+                'conf', ['#e6194b', '#ffc107', '#2ecc71'], N=100)
+            norm = mcolors.Normalize(0, 1)
+            for i, poly in enumerate(polygons):
+                arr = np.array(poly)
+                if arr.ndim == 2 and arr.shape[1] >= 2:
+                    color = cmap(norm(confidences[i]))
+                    self.ax.fill(arr[:, 1], arr[:, 0],
+                               color=color, alpha=0.45, edgecolor=color,
+                               linewidth=1.8)
+        else:
+            for poly in polygons:
+                arr = np.array(poly)
+                if arr.ndim == 2 and arr.shape[1] >= 2:
+                    self.ax.fill(arr[:, 1], arr[:, 0],
+                               color='#e6194b', alpha=0.45, edgecolor='#cc0033',
+                               linewidth=1.8)
         self.ax.set_title(title, fontsize=11)
         self.fig.tight_layout()
         self.draw_idle()
@@ -143,6 +200,8 @@ _PARAM_META = {
     'track_min_segment_length':('int', 0, 50),
     'track_dilate_radius':     ('int', 0, 20),
     'track_dilate_iterations': ('int', 1, 20),
+    # 多尺度
+    'dedup_overlap_threshold': ('float', 0.1, 1.0, 0.05),
 }
 
 _GROUP_NAMES = {
@@ -161,6 +220,7 @@ _GROUP_NAMES = {
     '断层追踪连接': ['track_max_link_distance', 'track_angle_weight',
                   'track_min_segment_length', 'track_dilate_radius',
                   'track_dilate_iterations'],
+    '多尺度': ['dedup_overlap_threshold'],
 }
 
 
@@ -182,6 +242,16 @@ class ParamPanel(QScrollArea):
             for key in keys:
                 w = self._add_control(form, key)
                 self._widgets[key] = w
+            # 多尺度组额外添加 sigma 列表输入
+            if group_name == '多尺度':
+                from config import PARAM_HINTS
+                w = QLineEdit()
+                w.setPlaceholderText('留空=单尺度，例如: 1.0,2.0,3.0')
+                w.setText(','.join(str(s) for s in self.cfg.scales))
+                w.setToolTip('多尺度高斯σ列表，逗号分隔。留空则使用单尺度。')
+                w.editingFinished.connect(lambda k='scales', w=w: self._on_scales_changed(w))
+                form.addRow('σ列表', w)
+                self._widgets['scales'] = w
             grp.setLayout(form)
             layout.addWidget(grp)
 
@@ -189,15 +259,18 @@ class ParamPanel(QScrollArea):
         self.setWidget(container)
         self.setWidgetResizable(True)
         self.setMinimumWidth(300)
+        self._update_param_state()
 
     def _add_control(self, form: QFormLayout, key: str):
         meta = _PARAM_META[key]
         default = getattr(self.cfg, key)
+        from config import PARAM_HINTS
+        hint = PARAM_HINTS.get(key, self._tr(key))
 
         if meta[0] == 'bool':
             w = QCheckBox()
             w.setChecked(default)
-            w.setToolTip(self._tr(key))
+            w.setToolTip(hint)
             w.toggled.connect(lambda v, k=key: self._on_change(k, v))
             form.addRow(self._tr(key), w)
             return w
@@ -209,7 +282,7 @@ class ParamPanel(QScrollArea):
             w.setCurrentIndex(idx)
             w.currentIndexChanged.connect(
                 lambda i, k=key, opts=options: self._on_change(k, opts[i]))
-            w.setToolTip(self._tr(key))
+            w.setToolTip(hint)
             form.addRow(self._tr(key), w)
             return w
         elif meta[0] == 'int':
@@ -218,7 +291,7 @@ class ParamPanel(QScrollArea):
             w.setRange(meta[1], meta[2])
             w.setSingleStep(step)
             w.setValue(int(default))
-            w.setToolTip(self._tr(key))
+            w.setToolTip(hint)
             w.valueChanged.connect(lambda v, k=key: self._on_change(k, v))
             form.addRow(self._tr(key), w)
             return w
@@ -229,7 +302,7 @@ class ParamPanel(QScrollArea):
             w.setSingleStep(step)
             w.setDecimals(3)
             w.setValue(float(default))
-            w.setToolTip(self._tr(key))
+            w.setToolTip(hint)
             w.valueChanged.connect(lambda v, k=key: self._on_change(k, v))
             form.addRow(self._tr(key), w)
             return w
@@ -276,6 +349,8 @@ class ParamPanel(QScrollArea):
             'track_min_segment_length': '最小片段长度',
             'track_dilate_radius': '膨胀半径',
             'track_dilate_iterations': '膨胀迭代次数',
+            'dedup_overlap_threshold': '去重重合度(IoU)',
+            'scales': '多尺度σ列表',
         }
         return mapping.get(key, key)
 
@@ -300,134 +375,412 @@ class ParamPanel(QScrollArea):
 
     def _on_change(self, key, value):
         setattr(self.cfg, key, value)
+        self._update_param_state()
         self.configChanged.emit()
+
+    def _on_scales_changed(self, line_edit):
+        text = line_edit.text().strip()
+        if text:
+            try:
+                self.cfg.scales = [float(x.strip()) for x in text.split(',') if x.strip()]
+            except ValueError:
+                self.cfg.scales = []
+        else:
+            self.cfg.scales = []
+        self.configChanged.emit()
+
+    def _update_param_state(self):
+        """根据当前参数值启用/禁用关联控件。"""
+        cfg = self.cfg
+        # 二值化模式关联
+        mode = cfg.threshold_mode
+        self._widgets.get('otsu_scale').setEnabled(mode == 'otsu')
+        self._widgets.get('fixed_threshold').setEnabled(mode == 'fixed')
+        self._widgets.get('hysteresis_low').setEnabled(mode == 'hysteresis')
+        self._widgets.get('hysteresis_high').setEnabled(mode == 'hysteresis')
+        self._widgets.get('adaptive_block_size').setEnabled(mode == 'adaptive')
+        self._widgets.get('adaptive_c').setEnabled(mode == 'adaptive')
+        # DP 模式关联
+        dp_mode = cfg.dp_mode
+        self._widgets.get('dp_epsilon').setEnabled(dp_mode == 'absolute')
+        self._widgets.get('dp_ratio').setEnabled(dp_mode == 'relative')
+        # Gabor 关联
+        use_gabor = cfg.use_gabor
+        self._widgets.get('gabor_frequency').setEnabled(use_gabor)
+        self._widgets.get('gabor_angles').setEnabled(use_gabor)
+        # 中值滤波关联
+        use_median = cfg.use_median_filter
+        self._widgets.get('median_filter_size').setEnabled(use_median)
+        # CLAHE 关联
+        use_clahe = cfg.use_clahe
+        self._widgets.get('clahe_clip_limit').setEnabled(use_clahe)
+        self._widgets.get('clahe_grid_size').setEnabled(use_clahe)
 
     def get_config(self) -> Config:
         return self.cfg
 
 
-# --- AI 助手对话框 ---
+# --- AI 助手对话框（DeepSeek 风格深色主题） ---
 
-_AI_TIPS = [
-    "Otsu阈值缩放 < 1 会检测更多微弱断层，但可能引入噪声；> 1 则更保守。",
-    "闭运算半径越大，断开的裂缝越容易被连接，但过度可能导致不同断层粘连。",
-    "开运算可以去除细小的椒盐噪声，建议值 1~3。",
-    "中值滤波对椒盐噪声特别有效，比高斯滤波更好地保留边缘。",
-    "双阈值滞后分割：高于高阈值的为确定断层，与确定断层连通且高于低阈值的也保留。",
-    "固定阈值模式适合断层响应整体偏强的数据，参考直方图确定，典型值 0.5~0.7。",
-    "Gabor方向滤波能增强特定方向的线性结构，适合弱且走向一致的断层。",
-    "椭圆核在走向方向上连接更强，十字核适合正交裂缝网络。",
-    "先开后闭 = 先去噪再填充，推荐默认；先闭后开 = 先连接再去除孤立噪点。",
-    "DP简化比例模式按周长×比例确定epsilon，推荐 0.005（0.5%周长），自动适应多边形大小。",
-    "自适应阈值适合光照/属性值不均匀的数据，比全局Otsu更灵活。",
-    "方向一致性权重越大，只有走向接近的片段才会被连接，避免交叉连接。",
-    "最大连接距离决定了断开多远的片段仍会被尝试连接，设置过大会导致错误连接。",
-    "长宽比过滤可去除细长的非断层噪声（如采集脚印），建议 10~30。",
-    "紧致度 = 周长²/(4π×面积)，越接近1越像圆形，断层通常是线状的（紧致度>1）。",
-    "UNet模式需要先训练模型（合成数据预训练即可），适合传统方法效果差时使用。",
-    "Shapefile 导出需要 pip install pyshp，可导入 ArcGIS / QGIS 等GIS软件。",
-    "如果断层数量过多，试着增大 min_polygon_area 或 otsu_scale。",
-    "如果断层连成一大片，减小 closing_radius 并增大开运算半径。",
-]
-
-_AI_POEMS = [
-    "地震波穿岩千尺深，断层面藏万象痕。\n参数调来寻裂隙，一朝识别见乾坤。",
-    "数据如山待剖析，断层似线要追踪。\n耐心调整三五处，累累纹理自可窥。",
-    "地下迷宫谁人知？属性图中线如丝。\n算子轻扫寻断处，万里地层入画时。",
-]
+DEEPSEEK_QSS = """
+QDialog {
+    background-color: #1a1a2e;
+}
+QLabel {
+    color: #c0c0d0;
+    font-family: 'Microsoft YaHei';
+    border: none;
+}
+QTextEdit {
+    background-color: #1a1a2e;
+    color: #d0d0e0;
+    border: none;
+    font-family: 'Microsoft YaHei';
+    font-size: 10.5pt;
+    selection-background-color: #3a3a5c;
+}
+QLineEdit {
+    background-color: #2a2a3e;
+    color: #e0e0e0;
+    border: 1px solid #3a3a5c;
+    border-radius: 10px;
+    padding: 10px 16px;
+    font-family: 'Microsoft YaHei';
+    font-size: 10.5pt;
+}
+QLineEdit:focus {
+    border: 1px solid #4a6cf7;
+    background-color: #30304a;
+}
+QPushButton {
+    background-color: #2a2a3e;
+    color: #b0b0c0;
+    border: 1px solid #3a3a5c;
+    border-radius: 6px;
+    padding: 7px 16px;
+    font-family: 'Microsoft YaHei';
+    font-size: 9pt;
+}
+QPushButton:hover {
+    background-color: #35355a;
+    border-color: #4a6cf7;
+    color: #d0d0f0;
+}
+QPushButton:pressed {
+    background-color: #2a2a4e;
+}
+QPushButton#sendBtn {
+    background-color: #4a6cf7;
+    color: #ffffff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 22px;
+    font-weight: bold;
+    font-size: 10pt;
+}
+QPushButton#sendBtn:hover {
+    background-color: #5b7dfa;
+}
+QPushButton#sendBtn:disabled {
+    background-color: #2a2a3e;
+    color: #666;
+}
+QPushButton#primaryBtn {
+    background-color: #2a2a40;
+    color: #b0c0f0;
+    border: 1px solid #3a3a60;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 9pt;
+}
+QPushButton#primaryBtn:hover {
+    background-color: #3a3a60;
+    border-color: #4a6cf7;
+    color: #d0d8ff;
+}
+QScrollBar:vertical {
+    background: #1a1a2e;
+    width: 8px;
+    border: none;
+    margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #3a3a5c;
+    border-radius: 4px;
+    min-height: 40px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #5a5a8c;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar:horizontal {
+    height: 0;
+}
+"""
 
 
 class AiDialog(QDialog):
-    def __init__(self, parent=None, cfg: Config = None, result: dict = None):
+    def __init__(self, parent=None, cfg: Config = None, result: dict = None,
+                 data_stats: dict = None):
         super().__init__(parent)
-        self.setWindowTitle("AI 助手 — 参数解读与建议")
-        self.resize(550, 420)
+        self.setWindowTitle("AI 地质助手 — DeepSeek")
+        self.resize(900, 650)
+        self.setMinimumSize(600, 400)
+        self.setStyleSheet(DEEPSEEK_QSS)
+        self.cfg = cfg
+        self.result = result
+        self.data_stats = data_stats or {}
+        self._busy = False
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        self.text = QTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setFont(QFont('Microsoft YaHei', 10))
-        layout.addWidget(self.text)
-
-        btn_layout = QHBoxLayout()
-        tip_btn = QPushButton("参数解读")
-        tip_btn.clicked.connect(lambda: self._show_tips(cfg))
-        poem_btn = QPushButton("来首地质诗")
-        poem_btn.clicked.connect(self._show_poem)
-        stats_btn = QPushButton("统计摘要")
-        stats_btn.clicked.connect(lambda: self._show_stats(result))
-        close_btn = QPushButton("关闭")
+        # ── 顶部标题栏 ──
+        header = QWidget()
+        header.setFixedHeight(50)
+        header.setStyleSheet(
+            "background-color: #14142a; border-bottom: 1px solid #2a2a3e;")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(18, 0, 12, 0)
+        logo = QLabel("✦")
+        logo.setStyleSheet(
+            "color: #4a6cf7; font-size: 18pt; font-weight: bold; border: none;")
+        title = QLabel("AI 地质助手")
+        title.setStyleSheet(
+            "color: #e8e8f8; font-size: 13pt; font-weight: bold; border: none;")
+        ver_tag = QLabel("DeepSeek-V4")
+        ver_tag.setStyleSheet(
+            "color: #6a6a8a; font-size: 7pt; border: none; padding: 3px 8px;"
+            "background: #20203a; border-radius: 3px; margin-left: 4px;")
+        self.status_dot = QLabel("●")
+        self.status_dot.setStyleSheet(
+            "color: #4ecf8c; font-size: 8pt; border: none; padding: 0 6px;")
+        h_layout.addWidget(logo)
+        h_layout.addWidget(title)
+        h_layout.addWidget(ver_tag)
+        h_layout.addWidget(self.status_dot)
+        h_layout.addStretch()
+        new_chat_btn = QPushButton("+ 新对话")
+        new_chat_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #888; border: 1px solid #333;"
+            "border-radius: 6px; padding: 4px 10px; font-size: 8.5pt; }"
+            "QPushButton:hover { color: #ccc; border-color: #555; background: #20203a; }")
+        new_chat_btn.clicked.connect(self._on_new_chat)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(32, 32)
+        close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #666; border: none; font-size: 15pt; }"
+            "QPushButton:hover { color: #e0e0e0; background: #3a2a2a; border-radius: 6px; }")
         close_btn.clicked.connect(self.accept)
+        h_layout.addWidget(new_chat_btn)
+        h_layout.addWidget(close_btn)
+        layout.addWidget(header)
 
-        btn_layout.addWidget(tip_btn)
-        btn_layout.addWidget(stats_btn)
-        btn_layout.addWidget(poem_btn)
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-        layout.addLayout(btn_layout)
+        # ── 聊天消息区 ──
+        self.chat_view = QTextEdit()
+        self.chat_view.setReadOnly(True)
+        self.chat_view.setStyleSheet(
+            "QTextEdit { background-color: #1a1a2e; color: #d0d0e0; border: none;"
+            "font-family: 'Microsoft YaHei'; font-size: 10.5pt; padding: 16px;"
+            "line-height: 1.6; }")
+        layout.addWidget(self.chat_view, 1)
 
-        if result:
-            self._show_stats(result)
-        else:
-            self._show_tips(cfg)
+        # ── 快捷按钮行 ──
+        quick_bar = QWidget()
+        quick_bar.setStyleSheet("background-color: #1a1a2e; border: none;")
+        quick_layout = QHBoxLayout(quick_bar)
+        quick_layout.setContentsMargins(16, 4, 16, 4)
+        rec_btn = QPushButton("🧠 参数推荐")
+        rec_btn.setObjectName("primaryBtn")
+        rec_btn.clicked.connect(self._on_recommend)
+        interp_btn = QPushButton("🌍 地质解读")
+        interp_btn.setObjectName("primaryBtn")
+        interp_btn.clicked.connect(self._on_interpret)
+        quick_layout.addWidget(rec_btn)
+        quick_layout.addWidget(interp_btn)
+        quick_layout.addStretch()
+        layout.addWidget(quick_bar)
 
-    def _show_tips(self, cfg: Config):
-        lines = ["=== 参数解读 ===\n"]
-        lines.append(f"当前关键参数：")
-        lines.append(f"  二值化模式 = {cfg.threshold_mode}")
-        if cfg.threshold_mode == 'otsu':
-            lines.append(f"    Otsu缩放 = {cfg.otsu_scale}（{'偏保守' if cfg.otsu_scale >= 1 else '偏敏感'}）")
-        elif cfg.threshold_mode == 'fixed':
-            lines.append(f"    固定阈值 = {cfg.fixed_threshold}")
-        elif cfg.threshold_mode == 'hysteresis':
-            lines.append(f"    低阈值={cfg.hysteresis_low}, 高阈值={cfg.hysteresis_high}")
-        lines.append(f"  高斯滤波σ = {cfg.gaussian_sigma}")
-        lines.append(f"  中值滤波 = {'启用(' + str(cfg.median_filter_size) + ')' if cfg.use_median_filter else '禁用'}")
-        lines.append(f"  Gabor滤波 = {'启用(' + str(cfg.gabor_angles) + '方向)' if cfg.use_gabor else '禁用'}")
-        lines.append(f"  形态学顺序 = {'先开后闭' if cfg.morph_order == 'open_first' else '先闭后开'}")
-        lines.append(f"  结构元素 = {cfg.morph_kernel_shape}（闭{cfg.closing_radius}/开{cfg.opening_radius}）")
-        lines.append(f"  DP简化 = {'周长×' + str(cfg.dp_ratio) if cfg.dp_mode == 'relative' else str(cfg.dp_epsilon) + '像素'}")
-        lines.append(f"  最大连接距离 = {cfg.track_max_link_distance} 像素")
-        lines.append(f"  UNet = {'启用' if cfg.use_unet else '禁用'}")
-        lines.append(f"")
-        lines.append(random.choice(_AI_TIPS))
-        lines.append(random.choice(_AI_TIPS))
-        lines.append(f"\n提示：鼠标悬停在参数上可查看说明。")
-        self.text.setText('\n'.join(lines))
+        # ── 底部输入区 ──
+        input_bar = QWidget()
+        input_bar.setFixedHeight(72)
+        input_bar.setStyleSheet(
+            "background-color: #14142a; border-top: 1px solid #2a2a3e;")
+        input_layout = QHBoxLayout(input_bar)
+        input_layout.setContentsMargins(16, 10, 16, 10)
+        self.chat_input = QLineEdit()
+        self.chat_input.setPlaceholderText(
+            '输入地质问题，例如："怎么减少假阳性断层？"、"Otsu阈值为什么重要？"...')
+        self.chat_input.returnPressed.connect(self._on_chat)
+        send_btn = QPushButton("发 送")
+        send_btn.setObjectName("sendBtn")
+        send_btn.setCursor(Qt.PointingHandCursor)
+        send_btn.clicked.connect(self._on_chat)
+        input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(send_btn)
+        layout.addWidget(input_bar)
 
-    def _show_stats(self, result: dict):
-        if result is None:
-            self.text.setText("请先运行流水线后再查看统计摘要。")
+        # 欢迎消息
+        self._show_welcome()
+
+    def _show_welcome(self):
+        self.chat_view.clear()
+        self._append_message("ai", (
+            "你好！我是基于 DeepSeek-V4 大模型的 AI 助手，可以自由回答任何问题。<br><br>"
+            "<b>我可以帮你：</b><br>"
+            "🧠 <b>参数推荐</b> — 根据数据统计特征，智能推荐最优算法参数<br>"
+            "🌍 <b>地质解读</b> — 从构造地质学角度解读断层检测结果<br>"
+            "💬 <b>自由问答</b> — 回答任何关于算法原理、参数含义、地质知识的问题<br><br>"
+            "👆 点击上方按钮，或直接在下方输入问题即可。"
+        ))
+
+    def _on_new_chat(self):
+        self._show_welcome()
+
+    # ── 消息渲染 ──
+
+    def _append_message(self, role: str, content: str):
+        """追加一条聊天气泡到消息区。用 QTextCursor 操作，避免 HTML 解析问题。"""
+        color = "#6a8cff" if role == "ai" else "#4ecf8c"
+        name = "AI" if role == "ai" else "You"
+        # 将换行转为 <br>
+        content_html = content.replace("\n", "<br>")
+        bubble = (
+            f"<div style='margin:10px 0;'>"
+            f"<span style='color:{color};font-weight:bold;font-size:9pt;'>{name}</span>"
+            f"<div style='background-color:#21213a;border-radius:10px;padding:12px 16px;"
+            f"margin-top:4px;color:#d0d0e0;line-height:1.65;font-size:10pt;'>"
+            f"{content_html}</div></div>"
+        )
+        cursor = self.chat_view.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertHtml(bubble)
+        # 滚动到底部
+        scrollbar = self.chat_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _append_loading(self):
+        """插入加载指示器，记录其位置以便后续移除。"""
+        loading_html = (
+            "<div style='margin:10px 0;'>"
+            "<span style='color:#6a8cff;font-weight:bold;font-size:9pt;'>AI</span>"
+            "<div style='background-color:#21213a;border-radius:10px;padding:12px 16px;"
+            "margin-top:4px;color:#6a8cff;font-size:10pt;'>"
+            "● ● ●  思考中...</div></div>"
+        )
+        cursor = self.chat_view.textCursor()
+        cursor.movePosition(cursor.End)
+        self._loading_pos = cursor.position()
+        cursor.insertHtml(loading_html)
+        scrollbar = self.chat_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        QApplication.processEvents()
+
+    def _remove_loading(self):
+        """用 QTextCursor 精确删除加载指示器。"""
+        try:
+            cursor = self.chat_view.textCursor()
+            cursor.movePosition(cursor.End)
+            cursor.setPosition(self._loading_pos, cursor.KeepAnchor)
+            cursor.removeSelectedText()
+        except Exception:
+            pass  # 如果状态异常也绝不崩溃
+
+    # ── 后台 LLM 调用 ──
+
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        self.chat_input.setEnabled(not busy)
+        self.status_dot.setStyleSheet(
+            f"color: {'#ffc107' if busy else '#4ecf8c'}; font-size: 8pt; border: none; padding: 0 6px;")
+
+    def _on_recommend(self):
+        if self._busy:
             return
-        lines = ["=== 统计摘要 ===\n"]
-        lines.append(f"检测到断层多边形数量：{result.get('count', 0)} 条")
-        lines.append(f"总面积：{result.get('total_area', 0)} 像素²")
-        lines.append(f"总长度（估算）：{result.get('total_length', 0)} 像素")
-        lines.append(f"最小面积：{result.get('min_area', 0)} 像素²")
-        lines.append(f"最大面积：{result.get('max_area', 0)} 像素²")
-        lines.append(f"处理耗时：{result.get('elapsed', 0)} 秒")
-        st = result.get('step_times', {})
-        if st:
-            lines.append("\n--- 各步骤耗时 ---")
-            lines.append(f"预处理:      {st.get('preprocess', 0):.3f}s")
-            lines.append(f"二值化:      {st.get('binarize', 0):.3f}s")
-            lines.append(f"形态学:      {st.get('morph', 0):.3f}s")
-            lines.append(f"断层追踪:    {st.get('track', 0):.3f}s")
-            lines.append(f"轮廓提取:    {st.get('contour_extract', 0):.3f}s")
-            lines.append(f"矢量化:      {st.get('vectorize', 0):.3f}s")
-            if st.get('multiscale', 0) > 0:
-                lines.append(f"多尺度融合:  {st.get('multiscale', 0):.3f}s")
-        if result.get('areas'):
-            areas = sorted(result['areas'], reverse=True)
-            lines.append(f"\n前5大面积：{areas[:5]}")
-            if len(areas) >= 3:
-                lines.append(f"面积中位数：{areas[len(areas)//2]:.1f}")
-        lines.append(f"\n{random.choice(_AI_TIPS)}")
-        self.text.setText('\n'.join(lines))
+        self._set_busy(True)
+        self._append_message("user", "请根据当前数据特征帮我推荐最优参数")
+        self._append_loading()
+        try:
+            from src.llm_advisor import recommend_params
+            config_dict = {
+                k: getattr(self.cfg, k)
+                for k in dir(self.cfg)
+                if not k.startswith('_') and not callable(getattr(self.cfg, k))
+            }
+            config_dict.pop('use_adaptive_threshold', None)
+            resp = recommend_params(self.data_stats, config_dict)
+        except Exception as e:
+            resp = f"调用 LLM 失败: {e}"
+        self._remove_loading()
+        self._append_message("ai", resp or "⚠ 无法连接 AI 服务，请检查网络或 API Key 配置。")
+        self._set_busy(False)
 
-    def _show_poem(self):
-        self.text.setText(random.choice(_AI_POEMS))
+    def _on_interpret(self):
+        if self._busy:
+            return
+        if self.result is None:
+            self._append_message("ai", "⚠ 请先运行流水线，获得检测结果后再进行地质解读。")
+            return
+        self._set_busy(True)
+        self._append_message("user", "请帮我解读断层检测结果的地质意义")
+        self._append_loading()
+        try:
+            from src.llm_advisor import interpret_results
+            areas = sorted(self.result.get('areas', []), reverse=True
+                          ) if self.result.get('areas') else []
+            result_stats = {
+                'count': self.result.get('count', 0),
+                'total_area': self.result.get('total_area', 0),
+                'total_length': self.result.get('total_length', 0),
+                'min_area': self.result.get('min_area', 0),
+                'max_area': self.result.get('max_area', 0),
+                'elapsed': self.result.get('elapsed', 0),
+                'mode': self.cfg.polygon_mode,
+                'median_area': areas[len(areas) // 2] if areas else 0,
+            }
+            resp = interpret_results(result_stats)
+        except Exception as e:
+            resp = f"调用 LLM 失败: {e}"
+        self._remove_loading()
+        self._append_message("ai", resp or "⚠ 无法连接 AI 服务，请检查网络或 API Key 配置。")
+        self._set_busy(False)
+
+    def _on_chat(self):
+        if self._busy:
+            return
+        prompt = self.chat_input.text().strip()
+        if not prompt:
+            return
+        self._set_busy(True)
+        self._append_message("user", prompt)
+        self.chat_input.clear()
+        self._append_loading()
+        try:
+            from src.llm_advisor import chat
+            context = {}
+            if self.data_stats:
+                context['data_stats'] = self.data_stats
+            if self.result:
+                context['result_stats'] = {
+                    'count': self.result.get('count', 0),
+                    'total_area': self.result.get('total_area', 0),
+                    'elapsed': self.result.get('elapsed', 0),
+                }
+            if self.cfg:
+                context['config'] = {
+                    k: getattr(self.cfg, k)
+                    for k in ['threshold_mode', 'otsu_scale', 'gaussian_sigma',
+                             'polygon_mode', 'min_polygon_area']
+                }
+            resp = chat(prompt, context)
+        except Exception as e:
+            resp = f"调用 LLM 失败: {e}"
+        self._remove_loading()
+        self._append_message("ai", resp or "⚠ 无法连接 AI 服务，请检查网络或 API Key 配置。")
+        self._set_busy(False)
 
 
 # --- 主窗口 ---
@@ -531,8 +884,15 @@ class MainWindow(QMainWindow):
             ('polygons',  "断层多边形"),
         ]
         for key, label in stage_names:
+            tab_widget = QWidget()
+            tab_layout = QVBoxLayout(tab_widget)
+            tab_layout.setContentsMargins(0, 0, 0, 0)
             canvas = MplCanvas()
-            self.tabs.addTab(canvas, label)
+            toolbar = NavigationToolbar2QT(canvas, tab_widget)
+            toolbar.setMaximumHeight(30)
+            tab_layout.addWidget(toolbar)
+            tab_layout.addWidget(canvas)
+            self.tabs.addTab(tab_widget, label)
             self._canvases[key] = canvas
 
         right_layout.addWidget(self.tabs)
@@ -721,7 +1081,8 @@ class MainWindow(QMainWindow):
         self._canvases['polygons'].plot_polygons(
             display_data,
             result['filtered'],
-            f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s")
+            f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s",
+            confidences=result.get('confidences'))
 
         # 控制台打印每步耗时
         st = result.get('step_times', {})
@@ -760,6 +1121,7 @@ class MainWindow(QMainWindow):
 
         polygons = self._result['filtered']
         areas = self._result['areas']
+        confidences = self._result.get('confidences', [])
 
         if fmt == 'geojson':
             path, _ = QFileDialog.getSaveFileName(
@@ -768,7 +1130,7 @@ class MainWindow(QMainWindow):
             if not path:
                 return
             from src.vectorize import export_geojson
-            export_geojson(polygons, path, areas)
+            export_geojson(polygons, path, areas, confidences=confidences)
             self._status_label.setText(f"已导出 {len(polygons)} 条多边形 → {os.path.basename(path)}")
 
         elif fmt == 'csv':
@@ -820,7 +1182,18 @@ class MainWindow(QMainWindow):
 
     def _on_ai_assistant(self):
         cfg = self.param_panel.get_config()
-        dlg = AiDialog(self, cfg, self._result)
+        data_stats = {}
+        if self._data is not None:
+            data = self._data
+            data_stats = {
+                'rows': data.shape[0], 'cols': data.shape[1],
+                'vmin': float(data.min()), 'vmax': float(data.max()),
+                'mean': float(data.mean()), 'std': float(data.std()),
+                'nonzero_ratio': float((np.abs(data) > 0.001).mean()),
+                'noise_est': float(np.median(
+                    np.abs(np.diff(data, axis=0)).flatten())),
+            }
+        dlg = AiDialog(self, cfg, self._result, data_stats)
         dlg.exec_()
 
     def _on_about(self):
