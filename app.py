@@ -105,29 +105,15 @@ class MplCanvas(FigureCanvasQTAgg):
         self.fig.tight_layout()
         self.draw_idle()
 
-    def plot_polygons(self, data: np.ndarray, polygons: list, title: str = "",
-                      confidences: list = None):
+    def plot_polygons(self, data: np.ndarray, polygons: list, title: str = ""):
         self.ax.clear()
         self.ax.imshow(data, cmap='gray', origin='upper', aspect='auto')
-        if confidences and len(confidences) == len(polygons):
-            import matplotlib.colors as mcolors
-            cmap = mcolors.LinearSegmentedColormap.from_list(
-                'conf', ['#e6194b', '#ffc107', '#2ecc71'], N=100)
-            norm = mcolors.Normalize(0, 1)
-            for i, poly in enumerate(polygons):
-                arr = np.array(poly)
-                if arr.ndim == 2 and arr.shape[1] >= 2:
-                    color = cmap(norm(confidences[i]))
-                    self.ax.fill(arr[:, 1], arr[:, 0],
-                               color=color, alpha=0.45, edgecolor=color,
-                               linewidth=1.8)
-        else:
-            for poly in polygons:
-                arr = np.array(poly)
-                if arr.ndim == 2 and arr.shape[1] >= 2:
-                    self.ax.fill(arr[:, 1], arr[:, 0],
-                               color='#e6194b', alpha=0.45, edgecolor='#cc0033',
-                               linewidth=1.8)
+        for poly in polygons:
+            arr = np.array(poly)
+            if arr.ndim == 2 and arr.shape[1] >= 2:
+                self.ax.fill(arr[:, 1], arr[:, 0],
+                           color='#e6194b', alpha=0.45, edgecolor='#cc0033',
+                           linewidth=1.8)
         self.ax.set_title(title, fontsize=11)
         self.fig.tight_layout()
         self.draw_idle()
@@ -244,7 +230,6 @@ class ParamPanel(QScrollArea):
                 self._widgets[key] = w
             # 多尺度组额外添加 sigma 列表输入
             if group_name == '多尺度':
-                from config import PARAM_HINTS
                 w = QLineEdit()
                 w.setPlaceholderText('留空=单尺度，例如: 1.0,2.0,3.0')
                 w.setText(','.join(str(s) for s in self.cfg.scales))
@@ -521,11 +506,49 @@ QScrollBar:horizontal {
 """
 
 
+class StreamWorker(QThread):
+    """后台线程：先搜索（可选）+ 流式 LLM 调用。"""
+    chunk = pyqtSignal(str)
+    done = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, messages, enable_search=False, search_query=""):
+        super().__init__()
+        self.messages = messages
+        self.enable_search = enable_search
+        self.search_query = search_query
+
+    def run(self):
+        from src.llm_advisor import chat_stream, web_search
+        if self.enable_search and self.search_query:
+            search_result = web_search(self.search_query)
+            if search_result:
+                self.messages.insert(1, {"role": "user", "content": search_result})
+                self.messages.insert(1, {"role": "system",
+                    "content": (
+                        "以下是从网络搜索获得的实时信息。你必须仔细阅读每条搜索结果，"
+                        "提取其中所有有用信息来回答用户问题。即使信息不完整，也要把"
+                        "搜索结果中看到的内容整理出来告诉用户，而不是直接说你不知道。"
+                        "只有在搜索结果完全不相关时才用你自己的知识补充。"
+                    )})
+        full = ""
+        try:
+            for chunk_text in chat_stream(self.messages):
+                if chunk_text is None:
+                    self.error.emit("无法连接 AI 服务，请检查网络或 API Key。")
+                    return
+                full += chunk_text
+                self.chunk.emit(chunk_text)
+            self.done.emit(full)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class AiDialog(QDialog):
     def __init__(self, parent=None, cfg: Config = None, result: dict = None,
                  data_stats: dict = None):
         super().__init__(parent)
-        self.setWindowTitle("AI 地质助手 — DeepSeek")
+        self.setWindowTitle("DeepSeek — AI 助手")
         self.resize(900, 650)
         self.setMinimumSize(600, 400)
         self.setStyleSheet(DEEPSEEK_QSS)
@@ -533,6 +556,7 @@ class AiDialog(QDialog):
         self.result = result
         self.data_stats = data_stats or {}
         self._busy = False
+        self._history = []  # 多轮对话历史 [{role, content}, ...]
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -548,7 +572,7 @@ class AiDialog(QDialog):
         logo = QLabel("✦")
         logo.setStyleSheet(
             "color: #4a6cf7; font-size: 18pt; font-weight: bold; border: none;")
-        title = QLabel("AI 地质助手")
+        title = QLabel("DeepSeek")
         title.setStyleSheet(
             "color: #e8e8f8; font-size: 13pt; font-weight: bold; border: none;")
         ver_tag = QLabel("DeepSeek-V4")
@@ -612,14 +636,19 @@ class AiDialog(QDialog):
         input_layout = QHBoxLayout(input_bar)
         input_layout.setContentsMargins(16, 10, 16, 10)
         self.chat_input = QLineEdit()
-        self.chat_input.setPlaceholderText(
-            '输入地质问题，例如："怎么减少假阳性断层？"、"Otsu阈值为什么重要？"...')
+        self.chat_input.setPlaceholderText('输入任何问题...')
         self.chat_input.returnPressed.connect(self._on_chat)
+        self.search_toggle = QCheckBox("🔍 联网")
+        self.search_toggle.setStyleSheet(
+            "QCheckBox { color: #888; font-size: 8pt; border: none; }"
+            "QCheckBox:hover { color: #ccc; }"
+            "QCheckBox:checked { color: #4a6cf7; }")
         send_btn = QPushButton("发 送")
         send_btn.setObjectName("sendBtn")
         send_btn.setCursor(Qt.PointingHandCursor)
         send_btn.clicked.connect(self._on_chat)
         input_layout.addWidget(self.chat_input)
+        input_layout.addWidget(self.search_toggle)
         input_layout.addWidget(send_btn)
         layout.addWidget(input_bar)
 
@@ -628,17 +657,55 @@ class AiDialog(QDialog):
 
     def _show_welcome(self):
         self.chat_view.clear()
-        self._append_message("ai", (
-            "你好！我是基于 DeepSeek-V4 大模型的 AI 助手，可以自由回答任何问题。<br><br>"
-            "<b>我可以帮你：</b><br>"
-            "🧠 <b>参数推荐</b> — 根据数据统计特征，智能推荐最优算法参数<br>"
-            "🌍 <b>地质解读</b> — 从构造地质学角度解读断层检测结果<br>"
-            "💬 <b>自由问答</b> — 回答任何关于算法原理、参数含义、地质知识的问题<br><br>"
-            "👆 点击上方按钮，或直接在下方输入问题即可。"
-        ))
+        self._history = []
+        self._append_message("ai",
+            "你好！我是 DeepSeek-V4 大模型驱动的 AI 助手。<br>"
+            "你可以自由问我任何问题——编程、数学、写作、知识问答……<br><br>"
+            "👆 也支持 <b>参数推荐</b> 和 <b>地质解读</b> 两个快捷功能。")
 
     def _on_new_chat(self):
+        if self._busy:
+            return
         self._show_welcome()
+
+    # ── 流式输出 ──
+
+    def _stream_begin(self, placeholder="▊"):
+        """插入空 AI 气泡占位，记录起始位置。"""
+        cursor = self.chat_view.textCursor()
+        cursor.movePosition(cursor.End)
+        self._stream_anchor = cursor.position()
+        cursor.insertHtml(
+            "<div style='margin:10px 0;'>"
+            "<span style='color:#6a8cff;font-weight:bold;font-size:9pt;'>AI</span>"
+            "<div style='background-color:#21213a;border-radius:10px;padding:12px 16px;"
+            "margin-top:4px;color:#d0d0e0;line-height:1.65;font-size:10pt;'>"
+            f"<span style='color:#6a8cff;'>{placeholder}</span>"
+            "</div></div>"
+        )
+        self._stream_text = ""
+
+    def _stream_chunk(self, text: str):
+        """收到文本块，替换占位气泡为累积内容。"""
+        self._stream_text += text
+        content = self._stream_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        cursor = self.chat_view.textCursor()
+        cursor.setPosition(self._stream_anchor)
+        cursor.movePosition(cursor.End, cursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertHtml(
+            "<div style='margin:10px 0;'>"
+            "<span style='color:#6a8cff;font-weight:bold;font-size:9pt;'>AI</span>"
+            "<div style='background-color:#21213a;border-radius:10px;padding:12px 16px;"
+            f"margin-top:4px;color:#d0d0e0;line-height:1.65;font-size:10pt;'>{content}"
+            "</div></div>"
+        )
+        scrollbar = self.chat_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _stream_end(self):
+        """流式结束，气泡已在最后一次 _stream_chunk 中完整渲染。"""
+        pass
 
     # ── 消息渲染 ──
 
@@ -694,6 +761,7 @@ class AiDialog(QDialog):
     def _set_busy(self, busy: bool):
         self._busy = busy
         self.chat_input.setEnabled(not busy)
+        self.search_toggle.setEnabled(not busy)
         self.status_dot.setStyleSheet(
             f"color: {'#ffc107' if busy else '#4ecf8c'}; font-size: 8pt; border: none; padding: 0 6px;")
 
@@ -757,29 +825,49 @@ class AiDialog(QDialog):
         self._set_busy(True)
         self._append_message("user", prompt)
         self.chat_input.clear()
-        self._append_loading()
-        try:
-            from src.llm_advisor import chat
-            context = {}
-            if self.data_stats:
-                context['data_stats'] = self.data_stats
-            if self.result:
-                context['result_stats'] = {
-                    'count': self.result.get('count', 0),
-                    'total_area': self.result.get('total_area', 0),
-                    'elapsed': self.result.get('elapsed', 0),
-                }
-            if self.cfg:
-                context['config'] = {
-                    k: getattr(self.cfg, k)
-                    for k in ['threshold_mode', 'otsu_scale', 'gaussian_sigma',
-                             'polygon_mode', 'min_polygon_area']
-                }
-            resp = chat(prompt, context)
-        except Exception as e:
-            resp = f"调用 LLM 失败: {e}"
-        self._remove_loading()
-        self._append_message("ai", resp or "⚠ 无法连接 AI 服务，请检查网络或 API Key 配置。")
+
+        # 构建消息列表：system + 历史 + 当前问题
+        from src.llm_advisor import SYSTEM_PROMPT
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(self._history[-20:])
+        messages.append({"role": "user", "content": prompt})
+
+        # 先保存用户消息到历史
+        self._history.append({"role": "user", "content": prompt})
+
+        enable_search = self.search_toggle.isChecked()
+
+        self._stream_begin(
+            placeholder="🔍 正在搜索..." if enable_search else "▊")
+
+        self._worker = StreamWorker(messages, enable_search=enable_search,
+                                     search_query=prompt if enable_search else "")
+        self._worker.chunk.connect(self._stream_chunk)
+        self._worker.done.connect(self._on_stream_done)
+        self._worker.error.connect(self._on_stream_error)
+        self._worker.start()
+
+    def _on_stream_done(self, full_text: str):
+        self._set_busy(False)
+        if full_text.strip():
+            self._history.append({"role": "assistant", "content": full_text})
+        if len(self._history) > 20:
+            self._history = self._history[-20:]
+
+    def _on_stream_error(self, err_msg: str):
+        self._stream_text += f"\n\n⚠ {err_msg}"
+        content = self._stream_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
+        cursor = self.chat_view.textCursor()
+        cursor.setPosition(self._stream_anchor)
+        cursor.movePosition(cursor.End, cursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertHtml(
+            "<div style='margin:10px 0;'>"
+            "<span style='color:#6a8cff;font-weight:bold;font-size:9pt;'>AI</span>"
+            "<div style='background-color:#21213a;border-radius:10px;padding:12px 16px;"
+            f"margin-top:4px;color:#d0d0e0;line-height:1.65;font-size:10pt;'>{content}"
+            "</div></div>"
+        )
         self._set_busy(False)
 
 
@@ -788,7 +876,7 @@ class AiDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("断层多边形自动追踪系统 v2.0")
+        self.setWindowTitle("断层多边形自动追踪系统 v2.2")
         self.resize(1280, 800)
         self._data = None
         self._result = None
@@ -1081,23 +1169,7 @@ class MainWindow(QMainWindow):
         self._canvases['polygons'].plot_polygons(
             display_data,
             result['filtered'],
-            f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s",
-            confidences=result.get('confidences'))
-
-        # 控制台打印每步耗时
-        st = result.get('step_times', {})
-        if st:
-            print(f"\n=== 流水线耗时分解 ===")
-            print(f"  预处理:      {st.get('preprocess', 0):.3f}s")
-            print(f"  二值化:      {st.get('binarize', 0):.3f}s")
-            print(f"  形态学:      {st.get('morph', 0):.3f}s")
-            print(f"  断层追踪:    {st.get('track', 0):.3f}s")
-            print(f"  轮廓提取:    {st.get('contour_extract', 0):.3f}s")
-            print(f"  矢量化:      {st.get('vectorize', 0):.3f}s")
-            if st.get('multiscale', 0) > 0:
-                print(f"  多尺度融合:  {st.get('multiscale', 0):.3f}s")
-            print(f"  总耗时:      {result['elapsed']:.3f}s")
-            print("=" * 30)
+            f"断层多边形 — {result['count']} 条, 耗时 {result['elapsed']:.3f}s")
 
         self._status_label.setText(
             f"完成  |  "
@@ -1121,7 +1193,6 @@ class MainWindow(QMainWindow):
 
         polygons = self._result['filtered']
         areas = self._result['areas']
-        confidences = self._result.get('confidences', [])
 
         if fmt == 'geojson':
             path, _ = QFileDialog.getSaveFileName(
@@ -1130,7 +1201,7 @@ class MainWindow(QMainWindow):
             if not path:
                 return
             from src.vectorize import export_geojson
-            export_geojson(polygons, path, areas, confidences=confidences)
+            export_geojson(polygons, path, areas)
             self._status_label.setText(f"已导出 {len(polygons)} 条多边形 → {os.path.basename(path)}")
 
         elif fmt == 'csv':
@@ -1198,21 +1269,26 @@ class MainWindow(QMainWindow):
 
     def _on_about(self):
         QMessageBox.about(self, "关于 — 断层多边形自动追踪系统",
-            "<h3>断层多边形自动追踪系统 v2.1</h3>"
-            "<p>基于传统图像处理与几何分析的断层多边形自动识别与追踪工具。</p>"
+            "<h3>断层多边形自动追踪系统 v2.2</h3>"
+            "<p>基于图像处理与几何分析的断层多边形自动追踪工具，"
+            "集成 DeepSeek-V4 大模型 AI 助手。</p>"
             "<p><b>核心功能：</b></p>"
             "<ul>"
-            "<li>多格式数据读取（.dat / .npy / .png / .tiff / .txt）</li>"
+            "<li>多格式数据读取（.dat / .npy / .png / .tiff / .txt / 合成数据）</li>"
+            "<li>预处理：高斯滤波 / 中值滤波 / CLAHE 增强 / Gabor 方向滤波</li>"
             "<li>四种二值化模式：Otsu / 固定 / 自适应 / 双阈值滞后分割</li>"
-            "<li>可选 Gabor 方向性滤波增强弱断层</li>"
-            "<li>三种形态学核形状：圆形 / 椭圆 / 十字</li>"
-            "<li>方向引导的断层片段智能连接</li>"
-            "<li>断层多边形提取 + DP简化(支持周长比例) + 统计</li>"
+            "<li>三种形态学核形状：圆形 / 椭圆 / 十字，支持先开后闭/先闭后开</li>"
+            "<li>方向引导的断层片段智能追踪连接</li>"
+            "<li>骨架精细模式 + 粗区域轮廓 两种多边形提取模式</li>"
+            "<li>Douglas-Peucker 简化（支持绝对像素/周长比例）+ 面积过滤</li>"
+            "<li>多尺度融合去重（IoU 匹配）</li>"
+                        "<li>多边形面积统计与过滤</li>"
             "<li>GeoJSON / CSV / TXT / Shapefile 多格式导出</li>"
+            "<li>DeepSeek-V4 AI 助手：智能参数推荐 + 地质解读 + 自由问答</li>"
             "<li>可选 UNet 深度学习分割</li>"
             "</ul>"
-            "<p><b>技术栈：</b>NumPy + SciPy + scikit-image + PyQt5 + Matplotlib</p>"
-            "<p><b>适用平台：</b>Windows / Linux (GeoEast 虚拟机)</p>"
+            "<p><b>技术栈：</b>NumPy + SciPy + scikit-image + PyQt5 + Matplotlib + PyTorch</p>"
+            "<p><b>集成：</b>GeoEast-RC (PyBO 数据读写 + QProcess_Run_Python 框架)</p>"
         )
 
 
